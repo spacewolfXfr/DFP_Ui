@@ -25,7 +25,7 @@ import enum
 
 import numpy as np
 
-from .Dubins import Pose3D
+from .Poses import Pose3D
 
 from scipy.spatial import distance_matrix
 
@@ -101,7 +101,7 @@ class Formation:
         """ Number of agents in the formation """
         return self.positions.shape[0]
     
-    def reorder(self,indices:np.ndarray) -> Self:
+    def reorder(self,indices:np.ndarray) -> Formation:
         """ Reorder the positions in the formation given a permutation
 
         Args:
@@ -141,7 +141,7 @@ class Formation:
         """
         return np.average(self.positions[:,:-1],axis=0)
     
-    def to_barycentric_coords(self,shift_center:bool=False) -> typing.Self:
+    def to_barycentric_coords(self,shift_center:bool=False) -> Formation:
         """ Modifies the relative positions (and possibly the center) such that the formation is written in barycentric coordinates
         
 
@@ -158,7 +158,7 @@ class Formation:
         
         return self
         
-    def apply_rotation(self) -> typing.Self:
+    def apply_rotation(self) -> Formation:
         """ Apply the rotation on the poses, thus moving them and reseting `orientation`
         """
         rotation_matrix = np.array([
@@ -174,7 +174,7 @@ class Formation:
         return self
         
         
-    def add_poses(self,new_poses:np.ndarray) -> typing.Self:
+    def add_poses(self,new_poses:np.ndarray) -> Formation:
         """ Add new poses to existing
 
         Args:
@@ -184,7 +184,7 @@ class Formation:
         
         return self
         
-    def join_poses(self,new_poses:np.ndarray,this_corner:Corner,other_corner:Corner,delta:np.ndarray) -> typing.Self:
+    def join_poses(self,new_poses:np.ndarray,this_corner:Corner,other_corner:Corner,delta:np.ndarray) -> Formation:
         """ Add new poses to current formation by joining the current corner with the new one, then apply the delta
         vector for separation
 
@@ -205,7 +205,7 @@ class Formation:
         # Add them to formation
         return self.add_poses(new_poses)
     
-    def move(self,p:Pose3D) -> typing.Self:
+    def move(self,p:Pose3D) -> Formation:
         self.positions[:,0] += p.x
         self.positions[:,1] += p.y
         self.positions[:,2] += p.z
@@ -213,12 +213,12 @@ class Formation:
         
         return self
     
-    def sort_x(self) -> typing.Self:
+    def sort_x(self) -> Formation:
         self.positions = self.positions[self.positions[:,0].argsort()]
         
         return self
     
-    def sort_y(self) -> typing.Self:
+    def sort_y(self) -> Formation:
         self.positions = self.positions[self.positions[:,1].argsort()]
         
         return self

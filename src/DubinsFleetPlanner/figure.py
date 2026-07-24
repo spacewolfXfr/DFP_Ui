@@ -15,7 +15,7 @@ from .DubinsPathFitting import plan_LRL, plan_RLR, plan_LSL, plan_LSR, plan_RSL,
         plan_LRL_from_straights, plan_RLR_from_straights, plan_LSL_from_straights, plan_LSR_from_straights,\
         plan_RSL_from_straights, plan_RSR_from_straights, plan_SLS_from_straights, plan_SRS_from_straights,\
         fit_LRL_radius, fit_RLR_radius, fit_LSL_radius, fit_LSR_radius, fit_RSL_radius, fit_RSR_radius, fit_SLS_radius, fit_SRS_radius
-from .plotting import plot_pose2d_sequence
+from .UI.plotting import plot_pose2d_sequence
 
 from .PathInterpolator import interpolate_path,unit_interpolate_basicpath
 

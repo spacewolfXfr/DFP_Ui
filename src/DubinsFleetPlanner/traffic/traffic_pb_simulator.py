@@ -1,7 +1,10 @@
 #!/usr/bin/python3
 
+from __future__ import annotations
+
 import dataclasses
 import typing
+from typing import Optional
 import subprocess
 import pathlib
 import json
@@ -13,6 +16,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from matplotlib.text import Text
+from matplotlib.patches import Circle
 from matplotlib import colormaps as cm
 
 Colortype = tuple[float,float,float,float]
@@ -24,17 +28,20 @@ from traffic.data import samples
 from traffic.algorithms import filters
 
 
-from .profiling.ProblemGenerator import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV
-from .Dubins import Path,BasicPath,FleetPlan,DubinsMove
-from .Poses import Pose2D,Pose3D,min_XY_dist
+from DubinsFleetPlanner.ioUtils import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV,print_FleetPlan_to_JSON,parse_trajectories_from_JSON
+from DubinsFleetPlanner.Dubins import Path,BasicPath,FleetPlan,DubinsMove
+from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist
 
 from pyproj import Transformer
 
+from pitot.geodesy import distance
 
-from .traffic.traffic_pb_generator import FlightEndpoints,LatlonPose,extract_flight_endpoints,flight_landing,NM_TO_METERS,get_other_runway_name,get_runway
-from .ioUtils import print_FleetPlan_to_JSON,parse_trajectories_from_JSON
 
-from .plotting import plot_pose2d_sequence,transpose_list_of_trajectories
+from .AirportHelpers import get_airport, get_airports, get_airport_latlon_transformer
+from .FlightExtraction import FlightEndpoints,LatlonPose,extract_flight_endpoints,flight_landing,NM_TO_METERS,get_other_runway_name,get_runway
+from .TrafficReader import iter_flightdata_by_day,filter_traffic
+
+from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,transpose_list_of_trajectories
 
 #################### Utility ####################
 
@@ -53,6 +60,34 @@ def make_box_boundary_file(xmin:float,xmax:float,ymin:float,ymax:float,filepath:
         
         with open(filepath,mode='w') as f:
             json.dump({'sections':sections},f)
+            
+def make_circle_boundary_file(xc:float,yc:float,radius:float,filepath:str|pathlib.Path):
+        sections = [
+            BasicPath.from_circle(xc,yc,radius).asdict()
+        ]
+        
+        with open(filepath,mode='w') as f:
+            json.dump({'sections':sections},f)
+            
+
+@dataclasses.dataclass
+class InfluenceCircle:
+    lat:float
+    lon:float
+    radius:float # In NM
+    
+    def to_xy_meters(self,transformer:Transformer) -> tuple[float,float,float]:
+        x,y = transformer.transform(self.lat,self.lon)
+        return (x,y,self.radius*NM_TO_METERS)
+    
+    def to_xy_NM(self,transformer:Transformer) -> tuple[float,float,float]:
+        x,y = transformer.transform(self.lat,self.lon)
+        return (x/NM_TO_METERS,y/NM_TO_METERS,self.radius)
+    
+    @staticmethod
+    def from_xy_meters(x:float,y:float,radius_meters:float,transformer:Transformer) -> InfluenceCircle:
+        lat,lon = transformer.transform(x,y,direction='INVERSE')
+        return InfluenceCircle(lat,lon,radius_meters/NM_TO_METERS)
 
 #################### Ongoing flights simulator ####################
 
@@ -126,7 +161,9 @@ class ArrivalsSimulator:
     obstacles_json_path:pathlib.Path            = pathlib.Path("obstacles_json.json")
     output_json_path:pathlib.Path               = pathlib.Path("output_json.json")
     input_csv_path:pathlib.Path                 = pathlib.Path("input_csv.csv")
-    geometric_obstacle_json_path:pathlib.Path   = pathlib.Path("geometric_obstacles.json")
+    geometric_obstacle_json_path:Optional[pathlib.Path]   = None
+    influence_circle:Optional[InfluenceCircle]  = None # Circle of influence for the solver, in (lat,lon,radius) in NM. If None, no influence circle is used.
+    __xy_circle:Optional[tuple[float,float,float]] = dataclasses.field(default=None,init=False) # Circle of influence for the solver, in (x,y,radius) in NM. If None, no influence circle is used.
     max_reschedule:int  = 3  # Maximum number of reschedule for each aircraft
     separation:float    = 5. # Overriden by the values in `flying` if it is defined
     z_alpha:float       = 1. # Overriden by the values in `flying` if it is defined
@@ -220,30 +257,33 @@ class ArrivalsSimulator:
                 end_proj = t.end.project(self.threshold_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
                 
                 color = self.__color_dict[t.id]
-                
-                if (t.dest_ICAO,t.dest_runway) not in self.__dest_dict:
-                    
-                    rw_1 = get_runway(t.dest_ICAO,t.dest_runway)
-                    rw_2 = get_runway(t.dest_ICAO,get_other_runway_name(t.dest_runway))
-                    
-                    proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
-                    proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
-                    
-                    dest_line = self.__axes.plot(
-                        [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
-                        linestyle='-',
-                        alpha=0.5,
-                        color=color,
-                        label=f"{t.dest_ICAO} : {t.dest_runway}"
-                    )[0]
-                    
-                    self.__dest_dict[(t.dest_ICAO,t.dest_runway)] = dest_line
+                if t.dest_airport is not None and t.dest_ICAO is not None and t.dest_runway is not None:
+                    if (t.dest_ICAO,t.dest_runway) not in self.__dest_dict:
+                        
+                        rw_1 = get_runway(t.dest_airport,t.dest_runway)
+                        rw_2 = get_runway(t.dest_airport,get_other_runway_name(t.dest_runway))
+                        
+                        assert rw_1 is not None
+                        assert rw_2 is not None
+                        
+                        proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
+                        proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
+                        
+                        dest_line = self.__axes.plot(
+                            [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
+                            linestyle='-',
+                            alpha=0.5,
+                            color=color,
+                            label=f"{t.dest_ICAO} : {t.dest_runway}"
+                        )[0]
+                        
+                        self.__dest_dict[(t.dest_ICAO,t.dest_runway)] = dest_line
                     
             self.__axes.set_xlim(minx,maxx)
             self.__axes.set_ylim(miny,maxy)
             
-            self.__axes.set_xlabel("Easting (NM, RGF93)")
-            self.__axes.set_ylabel("Northing (NM, RGF93)")
+            self.__axes.set_xlabel(f"Easting (NM, {self.transformer.target_crs.name})")
+            self.__axes.set_ylabel(f"Northing (NM, {self.transformer.target_crs.name})")
             
             self.__axes.legend()
             
@@ -272,6 +312,10 @@ class ArrivalsSimulator:
         ### Time forward
         new_t = timedelta + self.__t
         
+        ### Metadata
+        if self.influence_circle is not None and self.__xy_circle is None:
+            self.__xy_circle = self.influence_circle.to_xy_NM(self.transformer)
+        
         ## Move forward and gather candidates
         
         candidate_acs:set[int] = set()
@@ -282,22 +326,30 @@ class ArrivalsSimulator:
                 output.append((s,p.start))
                 added_acs.add(s.id)
                 
+                add_me = False
                 # Reschedule only possible during a straight without incoming turn
                 if p.sections[0].type == DubinsMove.STRAIGHT:
                     if len(p.junctions) > 0:
                         if p.junctions[0] > reschedule_threshold.total_seconds()/60:
-                            candidate_acs.add(s.id)
+                            add_me = True
                     else:
                         if p.duration() > reschedule_threshold.total_seconds()/60:
-                            candidate_acs.add(s.id)
+                            add_me = True
+                
+                # Don't reschedule if outside the influence circle
+                if self.__xy_circle is not None:
+                    dx = p.start.x - self.__xy_circle[0]
+                    dy = p.start.y - self.__xy_circle[1]
+                    if dx*dx + dy*dy > self.__xy_circle[2]*self.__xy_circle[2]:
+                        add_me = False
+                
+                if add_me:
+                    candidate_acs.add(s.id)
         
               
         for i,t in enumerate(self.tasklist):
             id = t.stats.id
             
-            # If already added via paths, skip
-            if id in added_acs:
-                continue
             # Task already ended: remove drawing
             if t.end_time <= new_t:
                 if (new_t - t.end_time) > timedelta*10:
@@ -315,75 +367,41 @@ class ArrivalsSimulator:
                 continue
             
             nt = t.straight_update(new_t - t.start_time)
-            candidate_acs.add(id)
-            added_acs.add(id)
+            
+            # If already added via paths, skip
+            if id in added_acs:
+                continue
+            
+            # Add for drawing and logging
             output.append((nt.stats,nt.start.to_pose3D(self.transformer,True)))
             self.tasklist[i] = nt
+            
+            # If there is an influence circle, check if the aircraft is inside it
+            if self.influence_circle is not None:
+                d = distance(nt.start.latitude,nt.start.longitude,self.influence_circle.lat,self.influence_circle.lon)
+                # Outside the influence circle: create a straight path (obstacle for other aircraft)
+                if d > self.influence_circle.radius*NM_TO_METERS:
+                    start_pose = nt.start.to_pose3D(self.transformer,True)
+                    end_pose = nt.start.project(self.cmd_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
+                    path = Path.straight_path(start_pose,end_pose,nt.stats.airspeed)
+                    solo_plan = FleetPlan(self.separation,self.z_alpha,self.wind_x,self.wind_y,path.total_length/nt.stats.airspeed,[(nt.stats,path)])
+                    if self.scheduled is None:
+                        self.scheduled = solo_plan
+                    else:
+                        self.scheduled.merge(solo_plan)
+                    
+                else:
+                    candidate_acs.add(id)
+            else:
+                candidate_acs.add(id)
+            
+            added_acs.add(id)
         
                 
         self.__t = new_t
         
-        if self.__axes is not None:            
-            for s,p in output:
-                id = s.id
-                try:
-                    line = self.__line_dict[id]
-                    xs = np.append(line.get_xdata(),p.x)
-                    ys = np.append(line.get_ydata(),p.y)
-                    line.set_xdata(xs[-self.line_buffersize:])
-                    line.set_ydata(ys[-self.line_buffersize:])
-                except KeyError:
-                    xs = [p.x]
-                    ys = [p.y]
-                    color = self.__color_dict[id]
-                    line = self.__axes.plot(xs,ys,alpha=0.2,marker=',',color=color)[0]
-                self.__line_dict[id] = line
-                color = line.get_color()
-                
-                try:
-                    endpoint = self.__pos_dict[id]
-                except KeyError:
-                    endpoint = self.__axes.plot([p.x],[p.y],marker='^',markerfacecolor=(0,0,0,0),markeredgecolor=color)[0]
-                    self.__pos_dict[id] = endpoint
-                
-                endpoint.set_xdata([p.x])
-                endpoint.set_ydata([p.y])
-                
-                
-                try:
-                    quiver = self.__quiver_dict[id]
-                except KeyError:
-                    quiver = self.__axes.quiver([p.x],[p.y],[np.cos(p.theta)*s.airspeed],[np.sin(p.theta)*s.airspeed],angles='xy',pivot='tail',color=color,
-                                                headwidth=0,headlength=0,headaxislength=0,width=0.002)
-                quiver.set_offsets([p.x,p.y])
-                quiver.set_UVC([np.cos(p.theta)],[np.sin(p.theta)])
-                self.__quiver_dict[id] = quiver
-                
-                
-                try:
-                    text = self.__label_dict[id]
-                except KeyError:
-                    text = self.__axes.text(p.x,p.y,str(id))
-                    self.__label_dict[id] = text
-                text.set_position((p.x,p.y))
-                t = self.tasklist[self.__task_index[id]]
-                text.set_text(f"  {id}: T -{(t.end_time-new_t).total_seconds()/60:.1f} min")
-                
-            
-            if self.__min_dist_line is not None and len(output) >= 2:
-                min_dist, index1, index2 = min_XY_dist(list(p for _,p in output))
-                stat1,p1 = output[index1]
-                stat2,p2 = output[index2]
-                
-                label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
-                if min_dist < self.separation:
-                    label += "\n!!! LOSS OF SEPARATION !!!"
-                
-                self.__min_dist_line.set_xdata([p1.x,p2.x])
-                self.__min_dist_line.set_ydata([p1.y,p2.y])
-                self.__min_dist_line.set_label(label)
-                
-                self.__axes.legend(*self.__axes.get_legend_handles_labels())
+        ## Update drawings
+        self.__update_axes(output, new_t)
         
         # Compute which aircraft can be rescheduled
         if reschedule:
@@ -451,7 +469,7 @@ class ArrivalsSimulator:
                     (self.wind_x,self.wind_y),
                     threads,
                     self.obstacles_json_path if obstacles_exist else None,
-                    self.geometric_obstacle_json_path if self.geometric_obstacle_json_path.exists() else None,
+                    self.geometric_obstacle_json_path if self.geometric_obstacle_json_path is not None and self.geometric_obstacle_json_path.exists() else None,
                     [self.cmd_shift],
                     [self.threshold_shift]
                 )
@@ -500,6 +518,71 @@ class ArrivalsSimulator:
             plt.pause(0.1)
             
         return output
+
+    def __update_axes(self, output:list[tuple[ACStats,Pose3D]], new_t:pd.Timestamp):
+        if self.__axes is None:
+            return
+        
+        for s,p in output:
+            id = s.id
+            try:
+                line = self.__line_dict[id]
+                xs = np.append(line.get_xdata(),p.x)
+                ys = np.append(line.get_ydata(),p.y)
+                line.set_xdata(xs[-self.line_buffersize:])
+                line.set_ydata(ys[-self.line_buffersize:])
+            except KeyError:
+                xs = [p.x]
+                ys = [p.y]
+                color = self.__color_dict[id]
+                line = self.__axes.plot(xs,ys,alpha=0.2,marker=',',color=color)[0]
+            self.__line_dict[id] = line
+            color = line.get_color()
+                
+            try:
+                endpoint = self.__pos_dict[id]
+            except KeyError:
+                endpoint = self.__axes.plot([p.x],[p.y],marker='^',markerfacecolor=(0,0,0,0),markeredgecolor=color)[0]
+                self.__pos_dict[id] = endpoint
+                
+            endpoint.set_xdata([p.x])
+            endpoint.set_ydata([p.y])
+                
+                
+            try:
+                quiver = self.__quiver_dict[id]
+            except KeyError:
+                quiver = self.__axes.quiver([p.x],[p.y],[np.cos(p.theta)*s.airspeed],[np.sin(p.theta)*s.airspeed],angles='xy',pivot='tail',color=color,
+                                                headwidth=0,headlength=0,headaxislength=0,width=0.002)
+            quiver.set_offsets([p.x,p.y])
+            quiver.set_UVC([np.cos(p.theta)],[np.sin(p.theta)])
+            self.__quiver_dict[id] = quiver
+                
+                
+            try:
+                text = self.__label_dict[id]
+            except KeyError:
+                text = self.__axes.text(p.x,p.y,str(id))
+                self.__label_dict[id] = text
+            text.set_position((p.x,p.y))
+            t = self.tasklist[self.__task_index[id]]
+            text.set_text(f"  {id}: T -{(t.end_time-new_t).total_seconds()/60:.1f} min")
+                
+            
+        if self.__min_dist_line is not None and len(output) >= 2:
+            min_dist, index1, index2 = min_XY_dist(list(p for _,p in output))
+            stat1,p1 = output[index1]
+            stat2,p2 = output[index2]
+                
+            label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
+            if min_dist < self.separation:
+                label += "\n!!! LOSS OF SEPARATION !!!"
+                
+            self.__min_dist_line.set_xdata([p1.x,p2.x])
+            self.__min_dist_line.set_ydata([p1.y,p2.y])
+            self.__min_dist_line.set_label(label)
+                
+            self.__axes.legend(*self.__axes.get_legend_handles_labels())
     
     def simulate(self, timestep:pd.Timedelta,
                  time_threshold:pd.Timedelta, reschedule_threshold:pd.Timedelta,
@@ -566,54 +649,6 @@ class ArrivalsSimulator:
 
 #################### Entrypoint ####################
 
-def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp', id_column:str='flight_id') -> typing.Generator[Traffic, None, None]:
-    """Load from the given Parquet file the timestamps and flight ids and group them by day. Produce a generator
-    yielding all columns from the Parquet file on a day by day basis (flights may start the day before or end the day after, the
-    associated points are provided).
-    
-    
-    A flight belong to a day if its first or last timestamp belong to it, we assume flights span less than 24h.
-
-    Args:
-        input_file (pathlib.Path): Path to the Parquet file containing the flight data.
-        time_column (str, optional): Column name for the timestamp. Defaults to 'timestamp'.
-        id_column (str, optional): Column name for the flight ID. Defaults to 'flight_id'.
-
-    Returns:
-        typing.Generator[Traffic, None, None]: Generator for each day's flight data as a Traffic object.
-
-    Yields:
-        Iterator[typing.Generator[Traffic, None, None]]: Iterator yielding Traffic objects for each day's flight data.
-    """
-    df = pd.read_parquet(input_file,columns=[time_column,id_column])
-    groups = df.groupby(id_column,sort=False)
-    min_vals = groups.min()
-    max_vals = groups.max()
-    min_vals['flight_id_col'] = min_vals.index
-    max_vals['flight_id_col'] = max_vals.index
-    
-    day_grouper = pd.Grouper(key=time_column, freq='D')
-    start_groups = min_vals.groupby(day_grouper,sort=True)
-    end_groups = max_vals.groupby(day_grouper,sort=True)
-    
-    for key in start_groups.groups.keys():
-        starting = start_groups.get_group(key)
-        ending = end_groups.get_group(key)
-        interval = starting.merge(ending, on=id_column, how='outer', suffixes=('_start', '_end')).drop(columns=['flight_id_col_start', 'flight_id_col_end'])
-        
-        yield Traffic(pd.read_parquet(input_file,filters=[(id_column, 'in', interval.index)]))
-    
-    
-
-def filter_traffic(traffic:Traffic,ICAO_set:typing.Iterable[str]) -> Traffic:
-    flight_to_remove = set()
-    for flight in traffic:
-        if flight_landing(flight,ICAO_set) is None:
-            flight_to_remove.add(flight.icao24)
-            
-    df = traffic.data
-    return Traffic(df[~df.icao24.isin(flight_to_remove)]).compute_xy().filter(filters.FilterAboveSigmaMedian()).eval(8) # type: ignore
-    
 
 def main():
     import argparse
@@ -639,10 +674,10 @@ def main():
                         help='Distance relative to runway threshold for defining last straight, in NM. Default to 10.',default=10)
     parser.add_argument('--cmd-shift',type=float,dest='cmd_shift',
                         help="Duration (in minutes) for which no commands should issued (that is, go straight). Default to 2 minutes.", default=2)
-    parser.add_argument('--border',type=str,dest='border',
-                        help="Either the distance in NM from the aircraft spawning zone which should be considered as a no-fly zone, or the name of a JSON file containing obstacles (if it cannot be parsed as float). Default to 5.", default=5)
-    parser.add_argument('--epsg',type=int,help="EPSG code for XY projection of (lat,lon) coordinates from WGS84. Default to 9794 (i.e. Lambert-93)",
-                        default=9794)
+    parser.add_argument('--influence-radius',type=float,dest='influence_radius',
+                        help="Radius of influence from the airports barycenter, in NM. If set, aircraft will be scheduled only within this radius. Disabled by default.",default=None)
+    parser.add_argument('--epsg',type=int,help="EPSG code for XY projection of (lat,lon) coordinates from WGS84. Default to the UTM zone of the first airport in the ICAO list.",
+                        default=None)
     
     parser.add_argument('-ts','--timestep',type=float,
                         help="Simulation time step, in minutes. Default to 1/6 (ie 10s).",default=1/6)
@@ -666,30 +701,52 @@ def main():
     solver = args.solver
     print("===== Parsing traffic... =====\n")
     if args.data is None:
-        traffic_iter = [filter_traffic(samples.quickstart,["LFPO","LFPG","LFPB"])]
+        traffic_iter = [samples.quickstart]
     else:
         traffic_iter = iter_flightdata_by_day(args.data,id_column='flight_id')
         if traffic_iter is None:
             print("ERROR: Importing traffic failed. Exiting")
             exit(1)
     
-    
+    airports = get_airports(args.ICAOs)
+    if args.epsg is None:
+        transformer = get_airport_latlon_transformer(airports[0])
+    else:
+        transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{args.epsg}")
+
+    expected_speed = args.speed # kts
+    threshold_shift = args.threshold_shift # NM
+    timeshifts = pd.timedelta_range(f"{args.intervals[0]} minute",f"{args.intervals[1]} minute",freq=f"{float(args.intervals[2])*60}s").to_list()
+
+    ## Generate borders ##
+    geometric_obstacle_json_path = None
+    influence_circle = None
+    if args.influence_radius is not None:
+        geometric_obstacle_json_path = pathlib.Path("geometric_obstacles.json")
+        avgx,avgy = 0,0
+        for a in airports:
+            x,y = transformer.transform(a.latitude,a.longitude)
+            avgx += x
+            avgy += y
+        avgx /= len(airports)
+        avgy /= len(airports)
+        make_circle_boundary_file(avgx/NM_TO_METERS,avgy/NM_TO_METERS,args.influence_radius,geometric_obstacle_json_path)
+        influence_circle = InfluenceCircle.from_xy_meters(avgx,avgy,args.influence_radius*NM_TO_METERS,transformer)
+
     for traffic in traffic_iter:
+        print(f"Processing traffic for day {traffic.data['timestamp'].min().date()}")
+        filtered_traffic = filter_traffic(traffic,airports)
+        if filtered_traffic is None:
+            print("No flights found for the given ICAO codes. Skipping to next day.")
+            continue
         plt.ion()
         fig,ax = plt.subplots(figsize=(16/1.5,9/1.5))
         ax.set_aspect('equal')
         fig.tight_layout()
         
         endpoints:list[FlightEndpoints] = []
-        expected_speed = args.speed # kts
-        threshold_shift = args.threshold_shift # NM
-        transformer = Transformer.from_crs(
-            "EPSG:4326",   # WGS84 (lat, lon)
-            f"EPSG:{args.epsg}",
-        )
-        timeshifts = pd.timedelta_range(f"{args.intervals[0]} minute",f"{args.intervals[1]} minute",freq=f"{float(args.intervals[2])*60}s").to_list()
         
-        for i,flight in enumerate(traffic):
+        for i,flight in enumerate(filtered_traffic):
             stats = ACStats(
                 i,
                 expected_speed/60, # Convert from kts (NM/h) to NM/minute
@@ -697,13 +754,13 @@ def main():
                 expected_speed/(60*np.pi) # Full circle in 2 minutes
             )
             
-            r = extract_flight_endpoints(flight,args.ICAOs,stats,0.)
+            r = extract_flight_endpoints(flight,airports,stats,0.)
             if r is None:
                 continue
             else:
-                endpoints.append(r[1])
-                
-        
+                if r[1] is not None:
+                    endpoints.append(r[1])
+                    
         print("\n===== Traffic parsing done! =====\nSetting up simulator...")
         
         sim = ArrivalsSimulator(pathlib.Path(solver),
@@ -719,21 +776,31 @@ def main():
         
         sim.attach_axes(ax)
         
-        ## Generate borders ##
-        try:
-            b = float(args.border)
-            
-            xmin,xmax = ax.get_xlim()
-            ymin,ymax = ax.get_ylim()
-            
-            make_box_boundary_file(xmin+b,xmax-b,ymin+b,ymax-b,sim.geometric_obstacle_json_path)
-            ax.plot(
-                [xmin+b,xmin+b,xmax-b,xmax-b,xmin+b],
-                [ymin+b,ymax-b,ymax-b,ymin+b,ymin+b],
-                'k-',label='Border'
+        if geometric_obstacle_json_path is not None:
+            sim.geometric_obstacle_json_path = geometric_obstacle_json_path
+        if influence_circle is not None:
+            sim.influence_circle = influence_circle
+            x,y,_ = influence_circle.to_xy_NM(transformer)
+            # The plot uses NM, it is easier for distance comparison.
+            ax.add_patch(
+                Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
             )
-        except ValueError:
-            sim.geometric_obstacle_json_path = args.border
+        
+        
+        # try:
+        #     b = float(args.border)
+            
+        #     xmin,xmax = ax.get_xlim()
+        #     ymin,ymax = ax.get_ylim()
+            
+        #     make_box_boundary_file(xmin+b,xmax-b,ymin+b,ymax-b,sim.geometric_obstacle_json_path)
+        #     ax.plot(
+        #         [xmin+b,xmin+b,xmax-b,xmax-b,xmin+b],
+        #         [ymin+b,ymax-b,ymax-b,ymin+b,ymin+b],
+        #         'k-',label='Border'
+        #     )
+        # except ValueError:
+        #     sim.geometric_obstacle_json_path = args.border
         
         ## Run simulation ##
         

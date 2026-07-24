@@ -21,6 +21,7 @@ import numpy as np
 from .Poses import Pose3D,ListOfTimedPoses,TimedPosesLine,DictOfPoseTrajectories
 from .Aircraft import ACStats,ACOptions
 from .Dubins import Path,BasicPath,FleetPlan,DubinsMove,mod2pi,central_angle
+from .Formation import Formation
 
 
 ######################################## Dubins problem writing and parsing ########################################
@@ -157,6 +158,19 @@ def write_ACOptions_to_JSON(file:pathlib.Path,data:typing.Sequence[ACOptions],ov
     with open(file,mode='w' if overwrite else 'x') as jsonfile:
         json.dump([e.asdict() for e in data],jsonfile,indent=2)
         
+
+def formations_to_PP_Problem(start_formation:Formation,end_formation:Formation,ac_stats:list[ACStats]) -> list[AC_PP_Problem]:
+    assert len(ac_stats) == start_formation.agent_num
+    assert len(ac_stats) == end_formation.agent_num
+    
+    start_poses = start_formation.get_abs_positions()
+    end_poses   = end_formation.get_abs_positions()
+    
+    output = []
+    for i in range(len(ac_stats)):
+        output.append(AC_PP_Problem(ac_stats[i],Pose3D.from_array(start_poses[i]),Pose3D.from_array(end_poses[i])))
+        
+    return output
 
 ######################################## Dubins results parsing ########################################
 

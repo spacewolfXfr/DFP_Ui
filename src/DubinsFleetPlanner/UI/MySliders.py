@@ -22,7 +22,7 @@ import matplotlib.widgets as wd
 
 from matplotlib.axes import Axes
 
-from .UI.util import ColorType
+from .util import ColorType
 
 class BinarySlider(wd.Slider):
     """ A Matplotlib Slider specification to implement a 0-1 toggle """

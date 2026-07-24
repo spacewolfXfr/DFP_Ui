@@ -9,9 +9,9 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
-
-from .Dubins import Pose2D,Pose3D,ACStats,Path,poses_XY_dist
-from .plotting import plot_pose2d_sequence
+from .Poses import Pose2D,Pose3D,poses_XY_dist
+from .Aircraft import ACStats
+from .Dubins import Path
 
 from .DubinsPathFitting import plan_LSL, plan_RSR,\
         fit_LSL_radius,fit_RSR_radius,plan_LSL_from_straights,plan_RSR_from_straights

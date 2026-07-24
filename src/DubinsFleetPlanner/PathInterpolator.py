@@ -3,7 +3,7 @@ from typing import Callable
 import numpy as np
 from scipy.interpolate import make_interp_spline,BSpline
 
-from .Dubins import Path,Pose3D,DubinsMove,ACStats,BasicPath
+from .Dubins import Path,DubinsMove,ACStats,BasicPath
 
 def unit_interpolate_basicpath(p:BasicPath,stepping:float=1.) -> BSpline:
     start = p.start()
@@ -34,8 +34,6 @@ def unit_interpolate_basicpath(p:BasicPath,stepping:float=1.) -> BSpline:
             [(1,vstart),(2,astart)],
             [(1,vend),(2,aend)]
         ))
-        
-        
         
 
 def interpolate_path(stats:ACStats,p:Path,cicle_step:float=1,junctions_offset:float=0.5) -> BSpline:

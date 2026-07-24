@@ -15,7 +15,5 @@
 # You should have received a copy of the GNU General Public License
 # along with DubinsFleetPlanner.  If not, see <https://www.gnu.org/licenses/>.
 
-import typing
-
 # Color type as defined by Matplotlib. See specs at: https://matplotlib.org/stable/users/explain/colors/colors.html#colors-def
 ColorType = tuple[float, float, float] | str | tuple[float, float, float, float] | tuple[tuple[float, float, float] | str, float] | tuple[tuple[float, float, float, float], float]

@@ -24,7 +24,7 @@ import pathlib
 
 from DubinsFleetPlanner.UI._plotting_extra import linestyle_dict,my_cmap,ColorType
 
-from .Poses import Pose3D,ListOfTimedPoses,DictOfPoseTrajectories,min_XY_dist
+from DubinsFleetPlanner.Poses import Pose3D,ListOfTimedPoses,DictOfPoseTrajectories,min_XY_dist
 
 from DubinsFleetPlanner.Dubins import DubinsMove,FleetPlan,BasicPath
 from DubinsFleetPlanner.ioUtils import parse_trajectories_from_JSON,parse_trajectories_from_CSV,transpose_list_of_trajectories,parse_obstacles_file
@@ -465,7 +465,7 @@ def animate_fleet_plan(plan:FleetPlan,sample_num:int,geo_obstacles:list[BasicPat
 
 
 
-if __name__ == '__main__':
+def main():
     import argparse
     
     parser = argparse.ArgumentParser('Dubins plotter','Display a Dubins path planning result.')

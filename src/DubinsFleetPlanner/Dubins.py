@@ -24,7 +24,7 @@ import copy
 
 import numpy as np
 
-from .Poses import Pose2D,Pose3D,poses_XY_dist,ListOfTimedPoses
+from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_dist,poses_XY_dist
 from .Aircraft import ACStats
 
 #################### Base elements ####################
@@ -321,6 +321,19 @@ class BasicPath:
         p4 = 0
         return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
     
+    @staticmethod
+    def from_circle(cx:float,cy:float,radius:float) -> BasicPath:
+        t = DubinsMove.LEFT
+        length = 2*np.pi*radius
+        x = cx
+        y = cy
+        z = 0.
+        p1 = radius
+        p2 = 1/radius
+        p3 = 0.
+        p4 = 0.
+        return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
+    
     ##### Setters and getters #####
     
     def speed(self) -> float:
@@ -399,6 +412,12 @@ class Path:
             last_time += s.duration()
             output.append(last_time)
         return output
+    
+    @staticmethod
+    def straight_path(start:Pose3D,end:Pose3D,speed:float=1.) -> Path:
+        length = poses_dist(start,end)
+        section = BasicPath.from_2_points((start.x,start.y,start.z),(end.x,end.y,end.z),speed)
+        return Path(length,start,end,[section])
     
     def __post_init__(self):
         self.junctions = self.__compute_junctions(self.sections)

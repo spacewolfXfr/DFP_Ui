@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
-from .Dubins import BasicPath,DubinsMove,poses_XY_dist
-from .plotting import plot_BasicPath_obstacle
+from .Poses import poses_XY_dist
+from .Dubins import BasicPath,DubinsMove
+from .UI.plotting import plot_BasicPath_obstacle
 
 
 from scipy.optimize import direct,OptimizeResult
