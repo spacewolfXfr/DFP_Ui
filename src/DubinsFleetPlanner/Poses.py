@@ -53,6 +53,23 @@ def poses_dist(p1:Pose3D,p2:Pose3D) -> float:
     
     return np.sqrt(dx*dx + dy*dy + dz*dz + dvx*dvx + dvy*dvy)
 
+def poses_dist_2D(p1:Pose3D,p2:Pose3D) -> float:
+    dx = p1.x - p2.x
+    dy = p1.y - p2.y
+    
+    dtheta = p1.theta - p2.theta
+    dvx = np.cos(dtheta) - 1.
+    dvy = np.sin(dtheta) - 0
+    
+    return np.sqrt(dx*dx + dy*dy + dvx*dvx + dvy*dvy)
+
+def poses_euclidean_dist(p1:Pose3D,p2:Pose3D) -> float:
+    dx = p1.x - p2.x
+    dy = p1.y - p2.y
+    dz = p1.z - p2.z
+    
+    return np.sqrt(dx*dx + dy*dy + dz*dz)
+
 def poses_XY_dist(p1:Pose3D|Pose2D,p2:Pose3D|Pose2D) -> float:
     dx = p1.x - p2.x
     dy = p1.y - p2.y

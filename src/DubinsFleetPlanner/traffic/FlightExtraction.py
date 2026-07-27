@@ -113,6 +113,13 @@ def get_ils_second_aligned_datapoint(flight:Flight,airport:str|Airport) -> Optio
         return None
     else:
         return ends_sorted.iloc[1]
+    
+def get_ils_last_aligned_datapoint(flight:Flight,airport:str|Airport) -> Optional[pd.Series]:
+    ends = flight.landing(airport,method='aligned_on_ils').next()
+    if ends is None:
+        return None
+    lst_timestamp = ends.data["timestamp"].max() # type: ignore
+    return ends.data[ends.data["timestamp"] == lst_timestamp].iloc[0]
 
 def get_first_airbone_dpt(flight:Flight) -> Optional[pd.Series]:
     airborne = flight.airborne()
@@ -140,9 +147,10 @@ class FlightEndpoints:
     end_time:pd.Timestamp
     initial_end_time:pd.Timestamp
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
-    start_airport:Optional[Airport]  = None
-    dest_airport:Optional[Airport]   = None
-    dest_runway:Optional[str]        = None
+    start_airport:Optional[Airport] = None
+    dest_airport:Optional[Airport]  = None
+    dest_runway:Optional[str]       = None
+    planned:bool                    = False
     
     @property
     def id(self) -> int:
@@ -175,6 +183,7 @@ class FlightEndpoints:
             self.start_airport,
             self.dest_airport,
             self.dest_runway,
+            self.planned
         )
     
     def to_AC_PP_Problem(self,transformer:Transformer,timeshifts:list[pd.Timedelta],flatten:bool=True) -> AC_PP_Problem:
@@ -190,7 +199,7 @@ class FlightEndpoints:
         Returns:
             AC_PP_Problem: _description_
         """
-        
+        self.start.to_pose3D(transformer,True)
         sx,sy = transformer.transform(self.start.latitude,self.start.longitude)
         start_proj = Pose3D(sx/NM_TO_METERS,sy/NM_TO_METERS,self.start.altitude,np.deg2rad(90 - self.start.bearing))
         
@@ -201,9 +210,11 @@ class FlightEndpoints:
             start_proj.z = 0.
             end_proj.z = 0.
         
+        print(f"\nFlight {self.stats.id} start: {start_proj} at {self.start_time}, end: {end_proj} at {self.end_time}. Slots: ")
         timeslots = []
         for ts in timeshifts:
             slot = ts + (self.end_time - self.start_time)
+            print(slot.total_seconds(), end=" s ; ")
             if slot.total_seconds() >= 0:
                 timeslots.append(slot.total_seconds()/60)
         
@@ -232,7 +243,6 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     """
     if not isinstance(candidate_airports,Airports):
         candidate_airports = get_airports(candidate_airports)
-    # print(f"Extracting flight endpoints for flight {flight} (initial number of points: {len(flight.data)})")
     try:
         start_airport = flight.data['departing_airport'].iloc[0]
         if start_airport is not None:
@@ -260,6 +270,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     if dest_airport is not None:
         ils_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
         ils_dpt = ils_dpt if ils_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
+        # ils_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
         if ils_dpt is not None:
             runway = get_runway(dest_airport,ils_dpt["ILS"])
             # print(f"Flight {flight} is landing at airport {dest_airport.icao} on runway {runway.name} (ILS: {ils_dpt['ILS']})")
@@ -298,8 +309,8 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             flight_datapoint_to_pose(first_dpt),
             first_dpt["timestamp"],
             LatlonPose(rw_proj[0],rw_proj[1],last_dpt["altitude"],rw_proj[2]),
-            last_dpt["timestamp"],
-            last_dpt["timestamp"],
+            ils_dpt["timestamp"],
+            ils_dpt["timestamp"],
             stats,
             start_airport,
             dest_airport,ils_dpt["ILS"])

@@ -8,6 +8,9 @@ from typing import Optional
 import subprocess
 import pathlib
 import json
+import copy
+from concurrent.futures import ProcessPoolExecutor
+import itertools
 
 import numpy as np
 
@@ -25,12 +28,11 @@ import pandas as pd
 
 from traffic.core import Traffic
 from traffic.data import samples
-from traffic.algorithms import filters
-
+from traffic.data.basic.airports import Airports
 
 from DubinsFleetPlanner.ioUtils import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV,print_FleetPlan_to_JSON,parse_trajectories_from_JSON
 from DubinsFleetPlanner.Dubins import Path,BasicPath,FleetPlan,DubinsMove
-from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist
+from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist,poses_dist,poses_dist_2D
 
 from pyproj import Transformer
 
@@ -128,11 +130,11 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     
     if obstacle_path is not None:
         cmd.append('-O')
-        cmd.append(obstacle_path.resolve())
+        cmd.append(str(obstacle_path.resolve()))
         
     if geometric_obstacles_path is not None:
         cmd.append('-G')
-        cmd.append(geometric_obstacles_path.resolve())
+        cmd.append(str(geometric_obstacles_path.resolve()))
         
     if len(start_extensions) > 0:
         cmd.append('--extend-start')
@@ -306,7 +308,7 @@ class ArrivalsSimulator:
     
     def step(self,timedelta:pd.Timedelta,
              reschedule_threshold:pd.Timedelta,final_time:pd.Timedelta,
-             reschedule:bool=False,threads:int=0) -> list[tuple[ACStats,Pose3D]]:
+             reschedule:bool=False,threads:int=0) -> tuple[list[tuple[ACStats,Pose3D]],bool]:
         output:list[tuple[ACStats,Pose3D]] = []
         
         ### Time forward
@@ -322,29 +324,37 @@ class ArrivalsSimulator:
         added_acs:set[int] = set()
         if self.scheduled is not None:
             self.scheduled = self.scheduled.follow_for(timedelta.total_seconds()/60)
-            for s,p in self.scheduled.trajectories:
-                output.append((s,p.start))
-                added_acs.add(s.id)
-                
-                add_me = False
-                # Reschedule only possible during a straight without incoming turn
-                if p.sections[0].type == DubinsMove.STRAIGHT:
-                    if len(p.junctions) > 0:
-                        if p.junctions[0] > reschedule_threshold.total_seconds()/60:
-                            add_me = True
-                    else:
-                        if p.duration() > reschedule_threshold.total_seconds()/60:
-                            add_me = True
-                
-                # Don't reschedule if outside the influence circle
-                if self.__xy_circle is not None:
-                    dx = p.start.x - self.__xy_circle[0]
-                    dy = p.start.y - self.__xy_circle[1]
-                    if dx*dx + dy*dy > self.__xy_circle[2]*self.__xy_circle[2]:
-                        add_me = False
-                
-                if add_me:
-                    candidate_acs.add(s.id)
+            if self.scheduled.duration < 1e-3:
+                self.scheduled = None
+            else:
+                for s,p in self.scheduled.trajectories:
+                    t = self.get_task(s.id)
+                    output.append((s,p.start))
+                    added_acs.add(s.id)
+                    
+                    add_me = False
+                    # Reschedule only possible during a straight without incoming turn
+                    if p.sections[0].type == DubinsMove.STRAIGHT:
+                        if len(p.junctions) > 0:
+                            if p.junctions[0] > reschedule_threshold.total_seconds()/60:
+                                add_me = True
+                        else:
+                            if p.duration() > reschedule_threshold.total_seconds()/60:
+                                add_me = True
+                    
+                    # Don't reschedule if outside the influence circle
+                    if self.__xy_circle is not None:
+                        dx = p.start.x - self.__xy_circle[0]
+                        dy = p.start.y - self.__xy_circle[1]
+                        if dx*dx + dy*dy > self.__xy_circle[2]*self.__xy_circle[2]:
+                            add_me = False
+                        else:
+                            if not t.planned:
+                                add_me = True
+                    
+                    
+                    if add_me:
+                        candidate_acs.add(s.id)
         
               
         for i,t in enumerate(self.tasklist):
@@ -366,35 +376,42 @@ class ArrivalsSimulator:
             if t.start_time > new_t:
                 continue
             
+            
             nt = t.straight_update(new_t - t.start_time)
+            self.tasklist[i] = nt
             
             # If already added via paths, skip
             if id in added_acs:
-                continue
+                if t.planned:
+                    continue
+            else:
+                # Add for drawing and logging
+                output.append((nt.stats,nt.start.to_pose3D(self.transformer,True)))
+                
             
-            # Add for drawing and logging
-            output.append((nt.stats,nt.start.to_pose3D(self.transformer,True)))
-            self.tasklist[i] = nt
+            # Create temporary straight path
+            start_pose = nt.start.to_pose3D(self.transformer,True)
+            start_pose.z = 0.
+            # end_pose = nt.start.project(self.cmd_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
+            end_pose = copy.copy(start_pose)
+            end_pose.x += np.cos(start_pose.theta)*nt.stats.airspeed*self.cmd_shift*1.1
+            end_pose.y += np.sin(start_pose.theta)*nt.stats.airspeed*self.cmd_shift*1.1
+            path = Path.straight_path(start_pose,end_pose,nt.stats.airspeed)
+            solo_plan = FleetPlan(self.separation,self.z_alpha,self.wind_x,self.wind_y,self.cmd_shift,[(nt.stats,path)])
+            if self.scheduled is None:
+                self.scheduled = solo_plan
+            else:
+                self.scheduled.merge(solo_plan)
             
             # If there is an influence circle, check if the aircraft is inside it
             if self.influence_circle is not None:
                 d = distance(nt.start.latitude,nt.start.longitude,self.influence_circle.lat,self.influence_circle.lon)
-                # Outside the influence circle: create a straight path (obstacle for other aircraft)
-                if d > self.influence_circle.radius*NM_TO_METERS:
-                    start_pose = nt.start.to_pose3D(self.transformer,True)
-                    end_pose = nt.start.project(self.cmd_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
-                    path = Path.straight_path(start_pose,end_pose,nt.stats.airspeed)
-                    solo_plan = FleetPlan(self.separation,self.z_alpha,self.wind_x,self.wind_y,path.total_length/nt.stats.airspeed,[(nt.stats,path)])
-                    if self.scheduled is None:
-                        self.scheduled = solo_plan
-                    else:
-                        self.scheduled.merge(solo_plan)
-                    
-                else:
+                # If it is, schedule it
+                if d <= self.influence_circle.radius*NM_TO_METERS:
                     candidate_acs.add(id)
             else:
+                # Otherwise, always schedule
                 candidate_acs.add(id)
-            
             added_acs.add(id)
         
                 
@@ -403,7 +420,9 @@ class ArrivalsSimulator:
         ## Update drawings
         self.__update_axes(output, new_t)
         
+        
         # Compute which aircraft can be rescheduled
+        print(f"Rescheduling: {reschedule}, candidate aircraft: {candidate_acs}")
         if reschedule:
             ## Remove those with no reschedule possible
             no_reschedule:set[int] = set()
@@ -430,6 +449,7 @@ class ArrivalsSimulator:
                 reschedule = False
         
         # If some aircraft have to be rescheduled, do it
+        success_schedule = True
         if reschedule:
             ## Print to JSON the set paths
             obstacles_exist = False
@@ -449,7 +469,7 @@ class ArrivalsSimulator:
             for id in candidate_acs:
                 i = self.__task_index[id]
                 task = self.tasklist[i]
-                ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts)
+                ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts,True) # This forces the Z values to all be 0. Be warned when trying to implement 3D control!
                 if self.scheduled is not None and id in self.scheduled._traj_dict.keys():
                     _,p = self.scheduled.get_path(id)
                     ppp.start = p.start
@@ -477,11 +497,23 @@ class ArrivalsSimulator:
                 ## Parse the result and merge
             
                 solved = parse_trajectories_from_JSON(self.output_json_path)
+                newly_scheduled = False
+                for s,p in solved.trajectories:
+                    i = self.__task_index[s.id]
+                    if not self.tasklist[i].planned:
+                        newly_scheduled = True
+                    self.tasklist[i].planned = True
+                    
                 
                 if self.scheduled is None:
                     self.scheduled = solved
                 else:
-                    self.scheduled.merge(solved)
+                    if set(self.scheduled.list_ids()) != set(solved.list_ids()) or newly_scheduled:
+                        # Add new solutions to the existing plan
+                        self.scheduled.merge(solved)
+                    else:
+                        if self.scheduled.sum_of_durations() > solved.sum_of_durations():
+                            self.scheduled = solved
                     
                 ## Update the task ends with the planning results
                 for s,p in self.scheduled.trajectories:
@@ -491,6 +523,11 @@ class ArrivalsSimulator:
                     dinit_duration = (self.tasklist[i].end_time - self.tasklist[i].initial_end_time).total_seconds()/60
                     if abs(dduration) > 0.1:
                         print(f"Change in arrival for {s.id}: {abs(dinit_duration):.1f} min {'earlier' if dduration < 0 else 'later'}")
+                    
+                    # assert poses_dist_2D(self.tasklist[i].end.to_pose3D(self.transformer,True),p.end) < 1e-3, f"Endpoints do not match for {s.id}: {self.tasklist[i].end.to_pose3D(self.transformer,True)} vs {p.end}"
+                    # p_lat,p_lon = self.transformer.transform(p.end.x*NM_TO_METERS,p.end.y*NM_TO_METERS,direction='INVERSE')
+                    # assert abs(p_lat-self.tasklist[i].end.latitude) < 1e-3, f"Latitudes do not match for {s.id}: {p_lat} vs {self.tasklist[i].end.latitude}"
+                    # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
                     
                     if self.__axes is not None:
                         poses = [p.pose_at(t) for t in np.linspace(0,p.duration(),50,endpoint=True)]
@@ -507,9 +544,14 @@ class ArrivalsSimulator:
                         
                     
             except Exception as e:
+                input()
+                if isinstance(e,AssertionError):
+                    raise e
+                
                 for id in candidate_acs:
                     self.schedule_counters[id] -= 1
                 self.__encountered_exception = e
+                success_schedule = False
                 print(f"EXCEPTION: {e}")
                 
                 
@@ -517,7 +559,7 @@ class ArrivalsSimulator:
             self.__axes.set_title(str(new_t))
             plt.pause(0.1)
             
-        return output
+        return output, success_schedule
 
     def __update_axes(self, output:list[tuple[ACStats,Pose3D]], new_t:pd.Timestamp):
         if self.__axes is None:
@@ -591,9 +633,9 @@ class ArrivalsSimulator:
                  threads:int):
         # log = []
         
+        do_schedule = True
         while self.__t < self.__end_of_times:
             try:
-                do_schedule = False
                 if (self.__t - self.__last_global_schedule) >= time_threshold:
                     do_schedule = True
                 
@@ -610,7 +652,9 @@ class ArrivalsSimulator:
                     do_schedule = unscheduled >= ac_num_threshold
                 
                 
-                poss = self.step(timestep,reschedule_threshold,final_time,do_schedule,threads)
+                poss,success_schedule = self.step(timestep,reschedule_threshold,final_time,do_schedule,threads)
+                if do_schedule and not success_schedule:
+                    do_schedule = True
                 # log.append((self.__t,poss))
                 # if self.__encountered_exception is not None:
                     # break
@@ -744,22 +788,10 @@ def main():
         ax.set_aspect('equal')
         fig.tight_layout()
         
-        endpoints:list[FlightEndpoints] = []
-        
-        for i,flight in enumerate(filtered_traffic):
-            stats = ACStats(
-                i,
-                expected_speed/60, # Convert from kts (NM/h) to NM/minute
-                1.,
-                expected_speed/(60*np.pi) # Full circle in 2 minutes
-            )
-            
-            r = extract_flight_endpoints(flight,airports,stats,0.)
-            if r is None:
-                continue
-            else:
-                if r[1] is not None:
-                    endpoints.append(r[1])
+        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic)
+        # for ep in endpoints:
+            # ax.scatter(ep.start.to_pose3D(transformer,True).x,ep.start.to_pose3D(transformer,True).y,marker='o',color='k',alpha=0.2)
+            # ax.scatter(ep.end.to_pose3D(transformer,True).x,ep.end.to_pose3D(transformer,True).y,marker='x',color='k',alpha=0.2)
                     
         print("\n===== Traffic parsing done! =====\nSetting up simulator...")
         
@@ -817,6 +849,41 @@ def main():
         cont = input("Enter 'y' to restart simulation with the next day data, quit otherwise: ")
         if cont != 'y':
             break
+
+def __wrapped_extract_flight_endpoints(args):
+    flight, airports, expected_speed = args
+    
+    id = flight.flight_id.split('_')[1]
+    
+    stats = ACStats(
+                int(id),
+                expected_speed/60, # Convert from kts (NM/h) to NM/minute
+                1.,
+                expected_speed/(60*np.pi) # Full circle in 2 minutes
+            )
+    
+    
+    o = extract_flight_endpoints(flight,airports,stats)
+    return o[0] if o is not None else None
+
+def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_traffic:Traffic) -> list[FlightEndpoints]:
+    endpoints = []
+    
+    number_of_flights = filtered_traffic.flight_ids.__len__()
+        
+    args_it = zip(filtered_traffic.iterate(),
+                  itertools.repeat(airports, number_of_flights),
+                  itertools.repeat(expected_speed, number_of_flights))
+
+    
+    
+    with ProcessPoolExecutor() as executor:
+        endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
+    
+    endpoints = [ep for ep in endpoints if ep is not None]
+    
+    
+    return endpoints
     
 if __name__ == '__main__':
     main()

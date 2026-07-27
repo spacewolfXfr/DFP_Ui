@@ -24,7 +24,7 @@ import copy
 
 import numpy as np
 
-from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_dist,poses_XY_dist
+from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_euclidean_dist
 from .Aircraft import ACStats
 
 #################### Base elements ####################
@@ -274,7 +274,7 @@ class BasicPath:
             self.type = DubinsMove(self.type)
             
     ##### Extra constructors #####
-    
+        
     @staticmethod
     def from_2D(type: DubinsMove, length: float, start:Pose2D, radius:float, speed:float=1.) -> BasicPath:
         dx = np.cos(start.angle)
@@ -290,10 +290,8 @@ class BasicPath:
                              0.,0.)
             
         else:
-            z = 0.
             p1 = radius
             p2 = speed/radius
-            p3 = 0.
             
             if type is DubinsMove.LEFT:
                 cx = start.x - dy*radius
@@ -306,7 +304,15 @@ class BasicPath:
             p4 = np.arctan2(start.y - cy, start.x - cx)
             return BasicPath(type,length,
                              cx,cy,0.,
-                             p1,p2,p3,p4)
+                             p1,p2,0.,p4)
+            
+    @staticmethod
+    def from_3D(type: DubinsMove, length: float, start:Pose3D, radius:float, speed:float=1.) -> BasicPath:
+        start_2d = start.to2D()
+        result = BasicPath.from_2D(type,length,start_2d,radius,speed)
+        result.z = start.z
+        result.p3 = 0.
+        return result
     
     @staticmethod
     def from_2_points(point0:tuple[float,float,float],point1:tuple[float,float,float],speed:float=1.) -> BasicPath:
@@ -322,12 +328,12 @@ class BasicPath:
         return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
     
     @staticmethod
-    def from_circle(cx:float,cy:float,radius:float) -> BasicPath:
+    def from_circle(cx:float,cy:float,radius:float, cz:float=0.) -> BasicPath:
         t = DubinsMove.LEFT
         length = 2*np.pi*radius
         x = cx
         y = cy
-        z = 0.
+        z = cz
         p1 = radius
         p2 = 1/radius
         p3 = 0.
@@ -358,6 +364,7 @@ class BasicPath:
             return self.p1
         
     def pose_at(self,t:float) -> Pose3D:
+        assert np.isclose(self.p3,0.)
         z = self.z + t*self.p3
         
         if self.type == DubinsMove.STRAIGHT:
@@ -408,18 +415,21 @@ class Path:
     def __compute_junctions(sections:list[BasicPath]) -> list[float]:
         output = []
         last_time = 0.
+        refspeed = sections[-1].speed()
         for s in sections[:-1]:
+            assert np.isclose(s.speed(),refspeed)
             last_time += s.duration()
             output.append(last_time)
         return output
     
     @staticmethod
     def straight_path(start:Pose3D,end:Pose3D,speed:float=1.) -> Path:
-        length = poses_dist(start,end)
+        length = poses_euclidean_dist(start,end)
         section = BasicPath.from_2_points((start.x,start.y,start.z),(end.x,end.y,end.z),speed)
         return Path(length,start,end,[section])
     
     def __post_init__(self):
+        assert np.isclose(self.total_length, sum(s.length for s in self.sections),1e-4)
         self.junctions = self.__compute_junctions(self.sections)
     
     def duration(self) -> float:
@@ -553,19 +563,27 @@ class Path:
             new_sections = self.sections[section_id:]
             
         new_start   = new_sections[0].pose_at(time)
-            
-        new_start_section = BasicPath.from_2D(
+        
+        new_start_section = BasicPath.from_3D(
             new_sections[0].type,
             (new_sections[0].duration()-time)*new_sections[0].speed(),
-            Pose2D(new_start.x,new_start.y,new_start.theta),
+            Pose3D(new_start.x,new_start.y,new_start.z,new_start.theta),
             new_sections[0].radius(),
             new_sections[0].speed()
         )
         
+        if new_sections[0].type == DubinsMove.STRAIGHT:
+            dtheta = np.mod(new_start.theta-new_start_section.end().theta,2*np.pi)
+            assert np.isclose(dtheta,0.,1e-4) or np.isclose(dtheta,2*np.pi,1e-4), f"New start section end angle {new_start_section.end().theta} does not match new start angle {new_start.theta} : value: {dtheta}"
+
         new_sections[0] = new_start_section
+        new_length = sum(s.length for s in new_sections)
         
-        return Path(new_duration,new_start,new_end,copy.deepcopy(new_sections))
-                
+        output = Path(new_length,new_start,new_end,copy.deepcopy(new_sections))
+        
+        assert np.isclose(output.duration(),new_duration,1e-4)
+        
+        return output
 
 def path_extra_length(p:list[BasicPath]|Path) -> float:
     """ Return the 'extra length' used by straight-extended paths (4 or 5 components)
@@ -756,6 +774,8 @@ class FleetPlan:
         assert(self.z_alpha == other.z_alpha)
         assert(self.wind_x == other.wind_x)
         assert(self.wind_y == other.wind_y)
+        assert(self.duration >= 0)
+        assert(other.duration >= 0)
         
         self.duration = max(self.duration,other.duration)
         
@@ -768,9 +788,7 @@ class FleetPlan:
                 self.trajectories.append((o_stats,o_traj))
                 self._traj_dict[o_stats.id] = len(self.trajectories)-1
                 self.AC_num += 1
-            
-            
-            
+                        
     def follow_for(self,time:float) -> FleetPlan:
         new_trajs:list[tuple[ACStats,Path]] = []
         
@@ -791,5 +809,11 @@ class FleetPlan:
             self.wind_y,
             self.duration-time,
             new_trajs
-        )       
+        )    
+        
+    def sum_of_durations(self) -> float:
+        output = 0.
+        for _,p in self.trajectories:
+            output += p.duration()
+        return output   
     
