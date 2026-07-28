@@ -34,6 +34,14 @@ class LatlonPose:
     altitude:float  # in fts
     bearing:float   # in degrees
     
+    @staticmethod
+    def from_pose3D(pose:Pose3D,transformer:Transformer, from_NM:bool=False) -> LatlonPose:
+        if from_NM:
+            lat,lon = transformer.transform(pose.x*NM_TO_METERS,pose.y*NM_TO_METERS,direction='INVERSE')
+        else:
+            lat,lon = transformer.transform(pose.x,pose.y,direction='INVERSE')
+        return LatlonPose(lat,lon,pose.z,np.rad2deg(90-pose.theta))
+    
     def to_pose3D(self,transformer:Transformer,to_NM:bool=False) -> Pose3D:
         x,y = transformer.transform(self.latitude,self.longitude)
         if to_NM:
@@ -210,11 +218,9 @@ class FlightEndpoints:
             start_proj.z = 0.
             end_proj.z = 0.
         
-        print(f"\nFlight {self.stats.id} start: {start_proj} at {self.start_time}, end: {end_proj} at {self.end_time}. Slots: ")
         timeslots = []
         for ts in timeshifts:
             slot = ts + (self.end_time - self.start_time)
-            print(slot.total_seconds(), end=" s ; ")
             if slot.total_seconds() >= 0:
                 timeslots.append(slot.total_seconds()/60)
         
