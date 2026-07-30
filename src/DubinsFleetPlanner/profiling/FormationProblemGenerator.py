@@ -17,9 +17,8 @@
 
 import itertools
 
-from .Formation import *
-
-from .profiling.ProblemGenerator import write_pathplanning_problem_to_CSV, AC_PP_Problem, ACStats, Pose3D
+from DubinsFleetPlanner.Formation import *
+from DubinsFleetPlanner.ioUtils import write_pathplanning_problem_to_CSV, AC_PP_Problem, ACStats, Pose3D
 
 def minmax_speeds(stats:list[ACStats]) -> tuple[float,float]:
     return min(s.airspeed for s in stats),max(s.airspeed for s in stats)

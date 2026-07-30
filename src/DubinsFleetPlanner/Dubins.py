@@ -622,54 +622,50 @@ class FleetPlan:
     wind_x      :float # Wind speed along the X axis 
     wind_y      :float # Wind speed along the Y axis
     duration    :float # Time duration of the plan
-    trajectories:list[tuple[ACStats,Path]] # List of paths and stats
-    AC_num      :int            = field(init=False) # Number of aircraft 
-    _traj_dict  :dict[int,int]  = field(init=False) # Match each AC_id to the correct index in the `trajectories` list
-    
-    def __gen_traj_dict(self):
-        self._traj_dict = dict()
-        for i,t in enumerate(self.trajectories):
-            self._traj_dict[t[0].id] = i
-        
-    
-    def __post_init__(self):
-        self.__gen_traj_dict()
-        
-        self.AC_num = len(self.trajectories)
-        if self.AC_num != len(self._traj_dict):
-            raise KeyError(f"Some AC ids are in duplicates")
+    trajectories:dict[int,tuple[ACStats,Path]] # List of paths and stats
             
+    def __post_init__(self):
+        if self.trajectories is None:
+            self.trajectories = {}
+        assert isinstance(self.trajectories,dict)
+    
+    @property
+    def AC_num(self) -> int:
+        return len(self.trajectories)
+    
+    @property
+    def ids(self) -> typing.KeysView[int]:
+        return self.trajectories.keys()
+    
     def add_path(self,path:Path,stats:ACStats):
-        if stats.id in self._traj_dict:
+        if stats.id in self.trajectories:
             raise KeyError(f"AC id {stats.id} is already used")
         
-        self.AC_num += 1
-        self._traj_dict[stats.id] = len(self.trajectories)
-        self.trajectories.append((stats,path))
-    
+        self.trajectories[stats.id] = (stats,path)
+
     @property
     def starts(self) -> dict[int,Pose3D]:
         output = dict()
-        for s,traj in self.trajectories:
+        for s,traj in self.trajectories.values():
             output[s.id] = traj.start
         return output
     
     @property
     def ends(self) -> dict[int,Pose3D]:
         output = dict()
-        for s,traj in self.trajectories:
+        for s,traj in self.trajectories.values():
             output[s.id] = traj.end
         return output
     
     def get_path(self,ac_id:int) -> tuple[ACStats,Path]:
-        return self.trajectories[self._traj_dict[ac_id]]
+        return self.trajectories[ac_id]
     
     def poses_at(self,t:float) -> dict[int,Pose3D]:
         output = dict()
         wind_dx = self.wind_x*t
         wind_dy = self.wind_y*t
         
-        for s,traj in self.trajectories:
+        for s,traj in self.trajectories.values():
             p = traj.pose_at(t)
             p.x += wind_dx
             p.y += wind_dy
@@ -692,10 +688,6 @@ class FleetPlan:
     def sample_at_fps(self,fps:int) -> ListOfTimedPoses:
         return self.sample_poses(np.ceil(self.duration*fps))
     
-    def list_ids(self) -> list[int]:
-        output = [s.id for s,_ in self.trajectories]
-        return output
-    
     def remove_path(self,ac_id:int|typing.Iterable[int]):
         if type(ac_id) is int:
             ids = [ac_id]
@@ -704,39 +696,28 @@ class FleetPlan:
         
         locs = []
         
-        for id in ids: # type: ignore
-            id:int
-            
-            locs.append(self._traj_dict[id])
-        
-        locs.sort(reverse=True)
         for loc in locs:
-            self.trajectories.pop(loc)
-            self.AC_num -= 1
-            
-        self.__gen_traj_dict()
+            del self.trajectories[loc]
     
     def generate_id_name_dict(self) -> dict[int,str]:
         output = dict()
-        for s,p in self.trajectories:
+        for s,p in self.trajectories.values():
             output[s.id] = p.abbr()
         return output
     
     def asdict(self,subset:typing.Optional[typing.Iterable[int]]=None) -> dict[str,typing.Any]:
         output = asdict(self)
-        output.pop("_traj_dict")
         output.pop("trajectories")
         output["trajectories"] = []
         
         if subset is None:
-            subset = self._traj_dict.keys()
+            subset = self.trajectories.keys()
 
         ac_count = 0
         
         for id in subset:
             ac_count += 1
-            i = self._traj_dict[id]
-            t = self.trajectories[i]
+            t = self.trajectories[id]
             output["trajectories"].append(
                 {
                     "stats" : t[0].asdict(),
@@ -755,17 +736,18 @@ class FleetPlan:
         assert(self.z_alpha == other.z_alpha)
         assert(self.wind_x == other.wind_x)
         assert(self.wind_y == other.wind_y)
+        assert(self.trajectories.keys() == other.trajectories.keys())
         
-        for o_stats,o_traj in other.trajectories:
-            s_stats,_ = self.trajectories[self._traj_dict[o_stats.id]]
+        for o_stats,o_traj in other.trajectories.values():
+            s_stats,_ = self.trajectories[o_stats.id]
             assert(s_stats == o_stats)
         
         # Then perform manipulations
         self.separation = min(self.separation,other.separation)
         self.duration += other.duration
         
-        for o_stats,o_traj in other.trajectories:
-            _,s_traj = self.trajectories[self._traj_dict[o_stats.id]]
+        for o_stats,o_traj in other.trajectories.values():
+            _,s_traj = self.trajectories[o_stats.id]
             s_traj.join(o_traj)
             
     
@@ -779,28 +761,24 @@ class FleetPlan:
         
         self.duration = max(self.duration,other.duration)
         
-        for o_stats,o_traj in other.trajectories:
+        for o_stats,o_traj in other.trajectories.values():
             try:
-                i = self._traj_dict[o_stats.id]
                 if override:
-                    self.trajectories[i] = o_stats,o_traj
+                    self.trajectories[o_stats.id] = o_stats,o_traj
             except KeyError:
-                self.trajectories.append((o_stats,o_traj))
-                self._traj_dict[o_stats.id] = len(self.trajectories)-1
-                self.AC_num += 1
+                self.trajectories[o_stats.id] = (o_stats,o_traj)
                         
     def follow_for(self,time:float) -> FleetPlan:
-        new_trajs:list[tuple[ACStats,Path]] = []
+        new_trajs:dict[int,tuple[ACStats,Path]] = {}
         
-        for i in range(len(self.trajectories)):
-            stats,path = self.trajectories[i]
+        for stats,path in self.trajectories.values():
             
             new_path = path.follow_for(time)
             if new_path is None:
                 continue
             else:
                 new_path.shift(self.wind_x*time,self.wind_y*time)
-                new_trajs.append((stats,new_path))
+                new_trajs[stats.id] = (stats,new_path)
         
         return FleetPlan(
             self.separation,
@@ -813,7 +791,7 @@ class FleetPlan:
         
     def sum_of_durations(self) -> float:
         output = 0.
-        for _,p in self.trajectories:
+        for _,p in self.trajectories.values():
             output += p.duration()
         return output   
     

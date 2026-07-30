@@ -238,8 +238,11 @@ def parse_trajectory_from_dict(d:dict, straights_compression:bool=False) -> tupl
 def parse_trajectories_from_JSON(file, straights_compression:bool=False) -> FleetPlan:
     with open(file) as jsonfile:
         raw_data = json.load(jsonfile)
-        
-        paths = [parse_trajectory_from_dict(t, straights_compression) for t in raw_data["trajectories"]]
+        paths = dict()
+        for t in raw_data["trajectories"]:
+            stats,path = parse_trajectory_from_dict(t, straights_compression)
+            paths[stats.id] = (stats,path)
+            
         output = FleetPlan(
             raw_data["separation"],
             raw_data["z_alpha"],

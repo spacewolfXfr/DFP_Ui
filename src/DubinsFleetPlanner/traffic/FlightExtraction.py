@@ -194,7 +194,7 @@ class FlightEndpoints:
             self.planned
         )
     
-    def to_AC_PP_Problem(self,transformer:Transformer,timeshifts:list[pd.Timedelta],flatten:bool=True) -> AC_PP_Problem:
+    def to_AC_PP_Problem(self,transformer:Transformer,timeshifts:list[pd.Timedelta],flatten:bool=True, add_initial_time:bool=False) -> AC_PP_Problem:
         """
         Export from this flight endpoints an Aircraft Path Planning problem  
         
@@ -223,6 +223,11 @@ class FlightEndpoints:
             slot = ts + (self.end_time - self.start_time)
             if slot.total_seconds() >= 0:
                 timeslots.append(slot.total_seconds()/60)
+        if add_initial_time:
+            for ts in timeshifts:
+                slot = ts + (self.initial_end_time - self.start_time)
+                if slot.total_seconds() >= 0:
+                    timeslots.append(slot.total_seconds()/60)
         
         return AC_PP_Problem(
             self.stats,

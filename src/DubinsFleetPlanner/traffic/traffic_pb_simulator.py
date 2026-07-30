@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from time import time
 import typing
 from typing import Optional
 import subprocess
@@ -115,10 +116,12 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     cmd.append('-l')
     
     cmd.append('--samples')
-    cmd.append('6')
+    cmd.append('3')
     
     cmd.append('--ellipse')
-    cmd.append('0.4')
+    cmd.append('0.6')
+    # cmd.append('0.7')
+    # cmd.append('0.8')
     
     cmd.append('--ellipse-border-only')
     
@@ -127,7 +130,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     
     cmd.append('--straights-only')
     cmd.append('--allow-shortest')
-    cmd.append('--fixed-radius')
+    # cmd.append('--fixed-radius')
     
     if obstacle_path is not None:
         cmd.append('-O')
@@ -147,7 +150,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
         for e in end_extensions:
             cmd.append(str(e))
     
-    # print(cmd)
+    print(cmd)
     output = subprocess.run(cmd)
     # print(output)
     output.check_returncode()
@@ -160,11 +163,19 @@ class ArrivalsSimulator:
     timeshifts:list[pd.Timedelta]
     threshold_shift:float   # By how much the endpoint have been moved along a straight line, in NM
     cmd_shift:float         # Minimal straight length at the start of newly planned trajectory, in NM
-    tasklist:list[FlightEndpoints]
+    reschedule_threshold:pd.Timedelta   # How much time must separe two reschedulings of the same aircraft, in pd.Timedelta
+    final_time:pd.Timedelta             # How much time must be left before the end of the task to allow rescheduling, in pd.Timedelta
+    
+    tasklist:list[FlightEndpoints] = dataclasses.field(default_factory=list)  # List of tasks to be done, sorted by start_time
+    removed_ids:set[int] = dataclasses.field(default_factory=set) # Storage for aircraft (id) removed due to minimal separation violation.
+
+    ## Temporary solver files
     obstacles_json_path:pathlib.Path            = pathlib.Path("obstacles_json.json")
     output_json_path:pathlib.Path               = pathlib.Path("output_json.json")
     input_csv_path:pathlib.Path                 = pathlib.Path("input_csv.csv")
     geometric_obstacle_json_path:Optional[pathlib.Path]   = None
+    
+    
     influence_circle:Optional[InfluenceCircle]  = None # Circle of influence for the solver, in (lat,lon,radius) in NM. If None, no influence circle is used.
     __xy_circle:Optional[tuple[float,float,float]] = dataclasses.field(default=None,init=False) # Circle of influence for the solver, in (x,y,radius) in NM. If None, no influence circle is used.
     max_reschedule:int  = 3  # Maximum number of reschedule for each aircraft
@@ -177,6 +188,8 @@ class ArrivalsSimulator:
     nopath_counter:dict[int,int] = dataclasses.field(init=False) # Dict from AC id to number of times no path was found
     line_buffersize:int = 20 # Number of past points kept in visualisation
     
+    
+    ## Timekeeping
     __last_global_schedule:pd.Timestamp     = dataclasses.field(init=False)
     __last_schedules:dict[int,pd.Timestamp] = dataclasses.field(init=False)
     __task_index:dict[int,int]    = dataclasses.field(init=False) # Reverse accessor from Aircraft ID to tasklist index
@@ -184,6 +197,7 @@ class ArrivalsSimulator:
     __end_of_times:pd.Timestamp   = dataclasses.field(init=False)
     __encountered_exception:typing.Optional[Exception] = dataclasses.field(default=None,init=False)
     
+    ## Plotting
     __axes:typing.Optional[Axes]    = dataclasses.field(default=None,init=False)
     __line_dict:dict[int,Line2D]    = dataclasses.field(default_factory=dict,init=False)
     __pos_dict:dict[int,Line2D]     = dataclasses.field(default_factory=dict,init=False)
@@ -194,10 +208,11 @@ class ArrivalsSimulator:
     __label_dict:dict[int,Text]     = dataclasses.field(default_factory=dict,init=False)
     __min_dist_line:typing.Optional[Line2D] = dataclasses.field(default=None,init=False)
     
-    def __post_init__(self):
+    def __setup_sim(self):
+        assert self.tasklist is not None and len(self.tasklist) > 0, "No tasks to simulate"
+        
         self.schedule_counters = dict()
         self.nopath_counter = dict()
-        self.tasklist.sort(key=lambda fpts : fpts.start_time)
         
         self.__t = self.tasklist[0].start_time
         self.__last_global_schedule = self.__t
@@ -218,6 +233,333 @@ class ArrivalsSimulator:
             self.wind_x = self.scheduled.wind_x
             self.wind_y = self.scheduled.wind_y
     
+    
+    def get_task(self,ac_id:int) -> FlightEndpoints:
+        return self.tasklist[self.__task_index[ac_id]]
+    
+    def is_running(self,ac_id:int) -> bool:
+        task = self.get_task(ac_id)
+        return task.start_time <= self.__t and task.end_time > self.__t
+    
+    def is_scheduled(self,ac_id:int) -> bool:
+        t = self.get_task(ac_id)
+        return t.planned
+    
+    def can_be_scheduled(self,task:FlightEndpoints,path:Path) -> bool:        
+        # If it has a plan, don't schedule by default
+        if task.planned:
+            add_me = False
+            
+            # Check if geometrically possible
+            can_be_rescheduled = False
+            # Reschedule only possible during a straight without incoming turn
+            if path.sections[0].type == DubinsMove.STRAIGHT:
+                if len(path.junctions) > 0:
+                    if path.junctions[0] > self.reschedule_threshold.total_seconds()/60:
+                        can_be_rescheduled = True
+                else:
+                    if path.duration() > self.reschedule_threshold.total_seconds()/60:
+                        can_be_rescheduled = True
+            
+            # If geometrically feasible, consider if it is close to end
+            if can_be_rescheduled:
+                add_me = True
+                # If too close, don't reschedule
+                if task.end_time - self.__t <= self.final_time:
+                    add_me = False
+                    
+                # Limit rescheduling number/frequency    
+                id = task.stats.id
+                if self.schedule_counters[id] >= self.max_reschedule:
+                   add_me = False
+                try:
+                   last_schedule = self.__last_schedules[id]
+                   if self.__t - last_schedule <= self.reschedule_threshold:
+                       add_me = False
+                except KeyError:
+                   pass                        
+        else:
+            # Schedule if it does not have a plan yet
+            add_me = True
+            # Except if outside the influence circle
+            if self.__xy_circle is not None:
+                dx = path.start.x - self.__xy_circle[0]
+                dy = path.start.y - self.__xy_circle[1]
+                if dx*dx + dy*dy > self.__xy_circle[2]*self.__xy_circle[2]:
+                    add_me = False
+        
+        return add_me
+                
+
+    def step(self,timedelta:pd.Timedelta,
+             threads:int=0) -> tuple[list[tuple[ACStats,Pose3D]],bool]:
+        output:list[tuple[ACStats,Pose3D]] = []
+        
+        ### Time forward
+        new_t = timedelta + self.__t
+        print(new_t.strftime("%Y-%m-%d %H:%M:%S"))
+        
+        ### Metadata
+        if self.influence_circle is not None and self.__xy_circle is None:
+            self.__xy_circle = self.influence_circle.to_xy_NM(self.transformer)
+        
+        
+        ## Check task to be done
+        unplanned_task:set[int] = set()
+        new_paths:dict[int,tuple[ACStats,Path]] = {}
+        for i,t in enumerate(self.tasklist):
+            id = t.stats.id
+            
+            # Task is removed due to loss of separation: skip it
+            if id in self.removed_ids:
+                continue
+            
+            # Task already ended: remove drawing
+            if t.end_time <= new_t:
+                if (new_t - t.end_time) > timedelta*10:
+                    self.__remove_from_axes(id)
+                continue
+            
+            # Task yet to begin: break (since tasklist is sorted by start_time)
+            if t.start_time > new_t:
+                break
+            
+            # If the task is planned, skip it
+            if t.planned: 
+                continue
+            else:
+                unplanned_task.add(id)
+            
+            # Otherwise, create a straight plan for it
+            start_pose = None
+            if self.scheduled is not None:
+                try:
+                    _,p = self.scheduled.get_path(id)
+                    start_pose = p.start
+                except KeyError:
+                    pass
+                
+            if start_pose is None:
+                start_pose = t.start.to_pose3D(self.transformer,True)
+            start_pose.z = 0
+            end_pose = copy.copy(start_pose)
+            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
+            
+            new_paths[id] = (t.stats,path)
+        
+        # Add the temporary straight paths to the current plan, if any
+        if len(new_paths) > 0:
+            new_plan = FleetPlan(self.separation,self.z_alpha,self.wind_x,self.wind_y,self.cmd_shift,new_paths)
+            if self.scheduled is None:
+                self.scheduled = new_plan
+            else:
+                self.scheduled.merge(new_plan)
+
+        ## Move forward
+        if self.scheduled is not None:
+            self.scheduled = self.scheduled.follow_for(timedelta.total_seconds()/60)
+            for s,p in self.scheduled.trajectories.values():
+                output.append((s,p.start))
+                
+            # Delete almost ended plan
+            if self.scheduled.duration < 1e-3:
+                self.scheduled = None
+                
+                    
+        self.__t = new_t
+        
+
+        loss_of_separation = False
+        if len(output) > 1:
+            min_dist, index1, index2 = min_XY_dist(list(p for _,p in output))
+            ac1 = output[index1][0].id
+            ac2 = output[index2][0].id
+            
+            if min_dist < self.separation:
+                loss_of_separation = True
+                print(f"LOSS OF SEPARATION: {min_dist:.2f} NM between {ac1} and {ac2}. ",end='')
+                t1 = self.get_task(ac1)
+                t2 = self.get_task(ac2)
+                if t1.planned and t2.planned:
+                    print(f"Both aircraft are planned!!!")
+                else:
+                    if t1.planned:
+                        self.removed_ids.add(ac2)
+                        if self.scheduled is not None:
+                            del self.scheduled.trajectories[ac2]
+                            self.__remove_from_axes(ac2)
+                        print(f"Removing {ac2} from the simulation")
+                    else:
+                        self.removed_ids.add(ac1)
+                        if self.scheduled is not None:
+                            del self.scheduled.trajectories[ac1]
+                            self.__remove_from_axes(ac1)
+                        print(f"Removing {ac1} from the simulation")
+                
+                
+        
+        ## Scheduling rounds
+        
+        # Add for rescheduling those who can
+        candidate_acs:set[int] = set()
+        if self.scheduled is not None:
+            for s,p in self.scheduled.trajectories.values():
+                t = self.get_task(s.id)
+                
+                if self.can_be_scheduled(t,p):
+                    candidate_acs.add(s.id)
+        
+        # Compute which aircraft can be rescheduled
+        if self.__t - self.__last_global_schedule < self.reschedule_threshold and len(unplanned_task) == 0:
+            candidate_acs = set()
+            print("Too early to reschedule")
+        else:
+            print(f"Candidate aircraft: {candidate_acs}")
+        
+        # If some aircraft have to be rescheduled, do it
+        success_schedule = True
+        noncandidate_acs = set()
+        if len(candidate_acs) > 0:
+            ## Print to JSON the set paths
+            obstacles_exist = False
+            if self.scheduled is not None:
+                print(f"Plan time: {self.scheduled.duration}")
+                noncandidate_acs = set(self.scheduled.ids) - candidate_acs
+                
+                if len(noncandidate_acs) > 0:
+                    print_FleetPlan_to_JSON(self.obstacles_json_path,self.scheduled,noncandidate_acs,True)
+                
+                    obstacles_exist = True
+            
+            
+            ## Print to CSV the problems to solve
+            pp_problems = []
+            for id in candidate_acs:
+                i = self.__task_index[id]
+                task = self.tasklist[i]
+                ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts,True,False) # This forces the Z values to all be 0. Be warned when trying to implement 3D control!
+                if self.scheduled is not None and id in self.scheduled.ids:
+                    _,p = self.scheduled.get_path(id)
+                    ppp.start = p.start
+                pp_problems.append(ppp)
+                
+            write_pathplanning_problem_to_CSV(self.input_csv_path,pp_problems,True)
+            
+            ## Call the solver
+            try:
+                solve_problem(
+                    self.solver_path,
+                    self.input_csv_path,
+                    self.output_json_path,
+                    self.separation,
+                    (self.wind_x,self.wind_y),
+                    threads,
+                    self.obstacles_json_path if obstacles_exist else None,
+                    self.geometric_obstacle_json_path if self.geometric_obstacle_json_path is not None and self.geometric_obstacle_json_path.exists() else None,
+                    [self.cmd_shift],
+                    [self.threshold_shift]
+                )
+                
+                ## Parse the result and merge
+            
+                solved = parse_trajectories_from_JSON(self.output_json_path)
+                self.__last_global_schedule = self.__t
+                newly_scheduled = False
+                for s,p in solved.trajectories.values():
+                    if s.id in noncandidate_acs:
+                        continue
+                    t = self.get_task(s.id)
+                    self.__last_schedules[s.id] = self.__t
+                    self.schedule_counters[s.id] += 1
+                    if not t.planned:
+                        newly_scheduled = True
+                    t.planned = True
+                    
+                
+                if self.scheduled is None:
+                    self.scheduled = solved
+                else:
+                    self.scheduled.merge(solved)
+                    # if set(self.scheduled.list_ids()) != set(solved.list_ids()) or newly_scheduled:
+                    #    Add new solutions to the existing plan
+                    # else:
+                        # if self.scheduled.sum_of_durations() > solved.sum_of_durations():
+                            # self.scheduled = solved
+                    
+                ## Update the task ends with the planning results
+                for s,p in self.scheduled.trajectories.values():
+                    t = self.get_task(s.id)
+                    if t.planned:
+                        dduration = (pd.Timedelta(minutes=p.duration()) - (t.end_time - new_t)).total_seconds()/60
+                        t.end_time = pd.Timedelta(minutes=p.duration()) + new_t
+                        dinit_duration = (t.end_time - t.initial_end_time).total_seconds()/60
+                        if abs(dduration) > 0.1:
+                            print(f"Change in arrival for {s.id}: {abs(dinit_duration):.1f} min {'earlier' if dduration < 0 else 'later'}")
+                    
+                    # assert poses_dist_2D(self.tasklist[i].end.to_pose3D(self.transformer,True),p.end) < 1e-3, f"Endpoints do not match for {s.id}: {self.tasklist[i].end.to_pose3D(self.transformer,True)} vs {p.end}"
+                    # p_lat,p_lon = self.transformer.transform(p.end.x*NM_TO_METERS,p.end.y*NM_TO_METERS,direction='INVERSE')
+                    # assert abs(p_lat-self.tasklist[i].end.latitude) < 1e-3, f"Latitudes do not match for {s.id}: {p_lat} vs {self.tasklist[i].end.latitude}"
+                    # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
+                    
+                    if self.__axes is not None:
+                        poses = [p.pose_at(t) for t in np.linspace(0,p.duration(),50,endpoint=True)]
+                        
+                            
+                        c = self.__color_dict[s.id]
+                        _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
+                        try:
+                            self.__traj_dict[s.id].set_visible(False)
+                            del self.__traj_dict[s.id]
+                        except KeyError:
+                            pass
+                        self.__traj_dict[s.id] = l[0]
+                        
+                    
+            except Exception as e:
+                if isinstance(e,AssertionError):
+                    raise e
+                
+                self.__encountered_exception = e
+                success_schedule = False
+                print(f"EXCEPTION: {e}")
+                
+                
+        if self.__axes is not None:
+            self.__update_axes(output, new_t, self.scheduled)
+            self.__axes.set_title(str(new_t))
+            
+        return output, success_schedule
+
+    def setup_simulation(self,endpoints:list[FlightEndpoints]):
+        self.tasklist = endpoints
+        self.tasklist.sort(key=lambda fpts : fpts.start_time)
+        self.__setup_sim()
+
+    def simulate(self,
+                 timestep:pd.Timedelta,
+                 threads:int):
+        
+        assert self.tasklist is not None and len(self.tasklist) > 0, "No tasks to simulate. Did not call `setup_simulation` first?"
+        
+        # log = []
+        
+        while self.__t < self.__end_of_times:
+            try:
+                states,success_schedule = self.step(timestep,threads)
+                # log.append((self.__t,states))
+                # if self.__encountered_exception is not None:
+                    # break
+            except KeyboardInterrupt:
+                print("Simulation interrupted by user.")
+                break
+            
+        plt.ioff()
+        self.report()
+        
+    #################### Plotting ####################
+        
     def attach_axes(self,ax:Axes,set_xylims:bool=True):
         self.__axes = ax
         self.__min_dist_line = ax.plot([],[],marker='D',linestyle=':',label=f"Min distance (-,-) : - NM",
@@ -291,281 +633,72 @@ class ArrivalsSimulator:
             self.__axes.set_ylabel(f"Northing (NM, {self.transformer.target_crs.name})")
             
             self.__axes.legend()
-            
         
-    
-    def get_task(self,ac_id:int) -> FlightEndpoints:
-        return self.tasklist[self.__task_index[ac_id]]
-    
-    def is_running(self,ac_id:int) -> bool:
-        task = self.get_task(ac_id)
-        return task.start_time <= self.__t and task.end_time > self.__t
-    
-    def is_scheduled(self,ac_id:int) -> bool:
-        t = self.get_task(ac_id)
-        return t.planned
-    
-    
-    
-    def step(self,timedelta:pd.Timedelta,
-             reschedule_threshold:pd.Timedelta,final_time:pd.Timedelta,
-             threads:int=0) -> tuple[list[tuple[ACStats,Pose3D]],bool]:
-        output:list[tuple[ACStats,Pose3D]] = []
+    def __remove_from_axes(self,ac_id:int):    
+        try:
+            self.__pos_dict[ac_id].set_visible(False)
+            del self.__pos_dict[ac_id]
+        except KeyError:
+            pass
         
-        ### Time forward
-        new_t = timedelta + self.__t
+        try:
+            self.__line_dict[ac_id].set_visible(False)
+            del self.__line_dict[ac_id]
+        except KeyError:
+            pass
         
-        ### Metadata
-        if self.influence_circle is not None and self.__xy_circle is None:
-            self.__xy_circle = self.influence_circle.to_xy_NM(self.transformer)
+        try:
+            self.__quiver_dict[ac_id].set_visible(False)
+            del self.__quiver_dict[ac_id]
+        except KeyError:
+            pass
         
+        try:
+            self.__label_dict[ac_id].set_visible(False)
+            del self.__label_dict[ac_id]
+        except KeyError:
+            pass
         
-        ## Check task to be done
-        new_paths:list[tuple[ACStats,Path]] = []
-        for i,t in enumerate(self.tasklist):
-            id = t.stats.id
-            
-            # Task already ended: remove drawing
-            if t.end_time <= new_t:
-                if (new_t - t.end_time) > timedelta*10:
-                    try:
-                        self.__line_dict[id].set_visible(False)
-                        self.__quiver_dict[id].set_visible(False)
-                        self.__label_dict[id].set_visible(False)
-                        self.__traj_dict[id].set_visible(False)
-                    except KeyError:
-                        pass
-                continue
-            
-            # Task yet to begin: break (since tasklist is sorted by start_time)
-            if t.start_time > new_t:
-                break
-            
-            # If the task is planned, skip it
-            if t.planned: continue
-            
-            # Otherwise, create a straight plan for it
-            start_pose = None
-            if self.scheduled is not None:
-                try:
-                    _,p = self.scheduled.get_path(id)
-                    start_pose = p.start
-                except KeyError:
-                    pass
-                
-            if start_pose is None:
-                start_pose = t.start.to_pose3D(self.transformer,True)
-            start_pose.z = 0
-            end_pose = copy.copy(start_pose)
-            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*1.1
-            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*1.1
-            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
-            
-            new_paths.append((t.stats,path))
-            
-        if len(new_paths) > 0:
-            new_plan = FleetPlan(self.separation,self.z_alpha,self.wind_x,self.wind_y,self.cmd_shift,new_paths)
-            if self.scheduled is None:
-                self.scheduled = new_plan
-            else:
-                self.scheduled.merge(new_plan)
+        try:
+            self.__traj_dict[ac_id].set_visible(False)
+            del self.__traj_dict[ac_id]
+        except KeyError:
+            pass
+        
+    def __update_axes(self, states:list[tuple[ACStats,Pose3D]], new_t:pd.Timestamp, trajs:Optional[FleetPlan]=None) -> Optional[tuple[float,int,int]]:
+        """
+        Update the axes given the input states and time.
 
-        ## Move forward and gather candidates
-        candidate_acs:set[int] = set()
-        added_acs:set[int] = set()
-        if self.scheduled is not None:
-            self.scheduled = self.scheduled.follow_for(timedelta.total_seconds()/60)
-            
-            # Delete almost ended plan
-            if self.scheduled.duration < 1e-3:
-                self.scheduled = None
-            else:
-                # Add for rescheduling those who can
-                for s,p in self.scheduled.trajectories:
-                    t = self.get_task(s.id)
-                    output.append((s,p.start))
-                    added_acs.add(s.id)
-                    
-                    # By default, schedule if the current plan is not satisfactory
-                    add_me = not t.planned
-                    
-                    
-                    # If it has a plan, don't schedule by default
-                    if t.planned:
-                        add_me = False
-                        
-                        # Check if geometrically possible
-                        can_be_rescheduled = False
-                        # Reschedule only possible during a straight without incoming turn
-                        if p.sections[0].type == DubinsMove.STRAIGHT:
-                            if len(p.junctions) > 0:
-                                if p.junctions[0] > reschedule_threshold.total_seconds()/60:
-                                    can_be_rescheduled = True
-                            else:
-                                if p.duration() > reschedule_threshold.total_seconds()/60:
-                                    can_be_rescheduled = True
-                        
-                        # If geometrically feasible, consider if it is close to end
-                        if can_be_rescheduled:
-                            add_me = True
-                            # If too close, don't reschedule
-                            if t.end_time - new_t <= final_time:
-                                add_me = False
-                                
-                            ## Limit rescheduling number/frequency    
-                            #id = s.id
-                            #if self.schedule_counters[id] >= self.max_reschedule:
-                            #    add_me = False
-                            #try:
-                            #    last_schedule = self.__last_schedules[id]
-                            #    if new_t - last_schedule <= reschedule_threshold:
-                            #        add_me = False
-                            #except KeyError:
-                            #    pass                        
-                    else:
-                        # Schedule if it does not have a plan yet
-                        add_me = True
-                        # Except if outside the influence circle
-                        if self.__xy_circle is not None:
-                            dx = p.start.x - self.__xy_circle[0]
-                            dy = p.start.y - self.__xy_circle[1]
-                            if dx*dx + dy*dy > self.__xy_circle[2]*self.__xy_circle[2]:
-                                add_me = False
-                    
-                    if add_me:
-                        candidate_acs.add(s.id)
-        
-        
-        self.__t = new_t
-        
-        ## Update drawings
-        self.__update_axes(output, new_t)
-        
-        
-        # Compute which aircraft can be rescheduled
-        print(f"Candidate aircraft: {candidate_acs}")
-        
-        # If some aircraft have to be rescheduled, do it
-        success_schedule = True
-        noncandidate_acs = set()
-        if len(candidate_acs) > 0:
-            ## Print to JSON the set paths
-            obstacles_exist = False
-            if self.scheduled is not None:
-                print(f"Plan time: {self.scheduled.duration}")
-                noncandidate_acs = set(self.scheduled._traj_dict.keys()) - candidate_acs
-                
-                if len(noncandidate_acs) > 0:
-                    print_FleetPlan_to_JSON(self.obstacles_json_path,self.scheduled,noncandidate_acs,True)
-                
-                    obstacles_exist = True
-            
-            
-            ## Print to CSV the problems to solve
-            pp_problems = []
-            for id in candidate_acs:
-                i = self.__task_index[id]
-                task = self.tasklist[i]
-                ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts,True) # This forces the Z values to all be 0. Be warned when trying to implement 3D control!
-                if self.scheduled is not None and id in self.scheduled._traj_dict.keys():
-                    _,p = self.scheduled.get_path(id)
-                    ppp.start = p.start
-                pp_problems.append(ppp)
-                self.schedule_counters[id] += 1
-                
-            write_pathplanning_problem_to_CSV(self.input_csv_path,pp_problems,True)
-            
-            ## Call the solver
-            try:
-                self.__last_global_schedule = new_t
-                solve_problem(
-                    self.solver_path,
-                    self.input_csv_path,
-                    self.output_json_path,
-                    self.separation,
-                    (self.wind_x,self.wind_y),
-                    threads,
-                    self.obstacles_json_path if obstacles_exist else None,
-                    self.geometric_obstacle_json_path if self.geometric_obstacle_json_path is not None and self.geometric_obstacle_json_path.exists() else None,
-                    [self.cmd_shift],
-                    [self.threshold_shift]
-                )
-                
-                ## Parse the result and merge
-            
-                solved = parse_trajectories_from_JSON(self.output_json_path)
-                newly_scheduled = False
-                for s,p in solved.trajectories:
-                    if s.id in noncandidate_acs:
-                        continue
-                    t = self.get_task(s.id)
-                    if not t.planned:
-                        newly_scheduled = True
-                    t.planned = True
-                    
-                
-                if self.scheduled is None:
-                    self.scheduled = solved
-                else:
-                    self.scheduled.merge(solved)
-                    # if set(self.scheduled.list_ids()) != set(solved.list_ids()) or newly_scheduled:
-                    #    Add new solutions to the existing plan
-                    # else:
-                        # if self.scheduled.sum_of_durations() > solved.sum_of_durations():
-                            # self.scheduled = solved
-                    
-                ## Update the task ends with the planning results
-                for s,p in self.scheduled.trajectories:
-                    t = self.get_task(s.id)
-                    if t.planned:
-                        dduration = (pd.Timedelta(minutes=p.duration()) - (t.end_time - new_t)).total_seconds()/60
-                        t.end_time = pd.Timedelta(minutes=p.duration()) + new_t
-                        dinit_duration = (t.end_time - t.initial_end_time).total_seconds()/60
-                        if abs(dduration) > 0.1:
-                            print(f"Change in arrival for {s.id}: {abs(dinit_duration):.1f} min {'earlier' if dduration < 0 else 'later'}")
-                    
-                    # assert poses_dist_2D(self.tasklist[i].end.to_pose3D(self.transformer,True),p.end) < 1e-3, f"Endpoints do not match for {s.id}: {self.tasklist[i].end.to_pose3D(self.transformer,True)} vs {p.end}"
-                    # p_lat,p_lon = self.transformer.transform(p.end.x*NM_TO_METERS,p.end.y*NM_TO_METERS,direction='INVERSE')
-                    # assert abs(p_lat-self.tasklist[i].end.latitude) < 1e-3, f"Latitudes do not match for {s.id}: {p_lat} vs {self.tasklist[i].end.latitude}"
-                    # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
-                    
-                    if self.__axes is not None:
-                        poses = [p.pose_at(t) for t in np.linspace(0,p.duration(),50,endpoint=True)]
-                        
-                            
-                        c = self.__color_dict[s.id]
-                        _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
-                        try:
-                            self.__traj_dict[s.id].set_visible(False)
-                            del self.__traj_dict[s.id]
-                        except KeyError:
-                            pass
-                        self.__traj_dict[s.id] = l[0]
-                        
-                    
-            except Exception as e:
-                if isinstance(e,AssertionError):
-                    raise e
-                
-                for id in candidate_acs:
-                    self.schedule_counters[id] -= 1
-                self.__encountered_exception = e
-                success_schedule = False
-                print(f"EXCEPTION: {e}")
-                
-                
-        if self.__axes is not None:
-            self.__axes.set_title(str(new_t))
-            plt.pause(0.1)
-            
-        return output, success_schedule
+        Args:
+            states (list[tuple[ACStats,Pose3D]]): _description_
+            new_t (pd.Timestamp): _description_
 
-    def __update_axes(self, output:list[tuple[ACStats,Pose3D]], new_t:pd.Timestamp):
+        Returns:
+            Optional[tuple[float,int,int]]: If there are at least two states, returns the minimum distance and the IDs of the two aircraft that are closest. Otherwise, returns None.
+        """
         if self.__axes is None:
             return
         
-        for s,p in output:
+        for s,p in states:
             id = s.id
+            
+            ## Clean trajs 
+            try:
+                self.__traj_dict[s.id].set_visible(False)
+                del self.__traj_dict[s.id]
+            except KeyError:
+                pass
+            
+            if trajs is not None:
+                try:
+                    _,path = trajs.get_path(s.id)
+                    poses = [path.pose_at(t) for t in np.linspace(0,path.duration(),50,endpoint=True)]
+                    c = self.__color_dict[s.id]
+                    _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
+                    self.__traj_dict[s.id] = l[0]
+                except KeyError:
+                    pass
+            
             try:
                 line = self.__line_dict[id]
                 xs = np.append(line.get_xdata(),p.x)
@@ -603,7 +736,6 @@ class ArrivalsSimulator:
             quiver.set_UVC([np.cos(p.theta)],[np.sin(p.theta)])
             self.__quiver_dict[id] = quiver
                 
-                
             try:
                 text = self.__label_dict[id]
             except KeyError:
@@ -613,59 +745,52 @@ class ArrivalsSimulator:
             t = self.tasklist[self.__task_index[id]]
             text.set_text(f"  {id}: T -{(t.end_time-new_t).total_seconds()/60:.1f} min")
                 
-            
-        if self.__min_dist_line is not None and len(output) >= 2:
-            min_dist, index1, index2 = min_XY_dist(list(p for _,p in output))
-            stat1,p1 = output[index1]
-            stat2,p2 = output[index2]
+        
+        
+        
+        if self.__min_dist_line is not None and len(states) >= 2:
+            min_dist, index1, index2 = min_XY_dist(list(p for _,p in states))
+            stat1,p1 = states[index1]
+            stat2,p2 = states[index2]
                 
             label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
             if min_dist < self.separation:
                 label += "\n!!! LOSS OF SEPARATION !!!"
-                input("LOSS OF SEPARATION: Press Enter to continue...")
                 
             self.__min_dist_line.set_xdata([p1.x,p2.x])
             self.__min_dist_line.set_ydata([p1.y,p2.y])
             self.__min_dist_line.set_label(label)
                 
             self.__axes.legend(*self.__axes.get_legend_handles_labels())
-    
-    def simulate(self, timestep:pd.Timedelta,
-                 reschedule_threshold:pd.Timedelta,
-                 final_time:pd.Timedelta,
-                 threads:int):
-        # log = []
-        
-        while self.__t < self.__end_of_times:
-            try:
-                poss,success_schedule = self.step(timestep,reschedule_threshold,final_time,threads)
-                # log.append((self.__t,poss))
-                # if self.__encountered_exception is not None:
-                    # break
-            except KeyboardInterrupt:
-                print("Simulation interrupted by user.")
-                break
             
-        plt.ioff()
-        self.report()
+            return min_dist,stat1.id,stat2.id
+        else:
+            return None
+    
         
     def report(self):
         dts = []
         for task in self.tasklist:
-            # Consider only tasks ended
-            if task.end_time < self.__t:
+            # Consider only tasks ended and not removed due to loss of separation
+            if task.end_time < self.__t and task.stats.id not in self.removed_ids:
                 dts.append((task.end_time - task.initial_end_time).total_seconds()/60)
         
-        hist,edges = np.histogram(dts)
+        min_dt = np.floor(np.min(dts))
+        max_dt = np.ceil(np.max(dts))
+        edges = [min_dt-1] + list(range(-15,15,2)) + [max_dt+1]
+        
+        hist,edges = np.histogram(dts,edges)
         mean = np.mean(dts)
         median = np.median(dts)
         std = np.std(dts)
         
         fig,ax = plt.subplots(1,1)
-        ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge')
+        bars = ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge')
+        ax.bar_label(bars, fontsize=20, color='navy')
         ax.set_xlabel('Delay (minutes)')
+        ax.set_xticks(edges)
         ax.set_ylabel('Frequency')
-        ax.set_title('Distribution of Flight Delays ({} flights)'.format(len(dts)))
+        ax.set_title('Distribution of Flight Delays ({} flights ; {} removed)'.format(len(dts), len(self.removed_ids)))
         ax.vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
         ax.vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
         ax.vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
@@ -679,7 +804,7 @@ class ArrivalsSimulator:
 
 
 def main():
-    import argparse
+    import argparse,cProfile
     
     parser = argparse.ArgumentParser(
         'Landing scheduler'
@@ -710,18 +835,21 @@ def main():
     parser.add_argument('-ts','--timestep',type=float,
                         help="Simulation time step, in minutes. Default to 1/6 (ie 10s).",default=1/6)
     parser.add_argument('-I','--intervals',nargs=3,
-                        help="Triplet (min,max,step) defining the offsets to the reference time for the target times. Defined in minutes. Default to (-15,15,2)",
-                        default=(-15,15,2))
+                        help="Triplet (min,max,step) defining the offsets to the reference time for the target times. Defined in minutes. Default to (-10,10,2)",
+                        default=(-10,10,2))
     parser.add_argument('-m','--max-reschedule',dest="max_reschedule",type=int,
                         help="Maximum number of times a flight can be rescheduled. Default to 3.",default=3)
     parser.add_argument('-t','--time-threshold',dest='time_threshold',type=float,
-                        help="Duration ellapsed after which we reschedule aircraft. Default to 2 minutes.",default=2)
+                        help="Duration ellapsed after which we reschedule aircraft. Default to 5 minutes.",default=5)
     parser.add_argument('-f','--final-time',dest='final_time',type=float,
                         help="Final duration in minutes. If an aircraft is less than this duration away from landing, it cannot be rescheduled. Default to 5 minutes.",
                         default=5)
     parser.add_argument('--threads',dest="threads",type=int,
                         help="Number of threads to be used by the solver. 0 allows it to autoselect. Default to 0.",default=0)
-    
+    parser.add_argument('--profile',dest="profile",action='store_true',
+                        help="If set, profile the simulation and print the results at the end. Default to False.",default=False)
+    parser.add_argument('--no-ui',dest="no_ui",action='store_true',
+                        help="If set, do not display the simulation UI. Default to False.",default=False)
     args = parser.parse_args()
 
     solver = args.solver
@@ -765,10 +893,12 @@ def main():
         if filtered_traffic is None:
             print("No flights found for the given ICAO codes. Skipping to next day.")
             continue
-        plt.ion()
-        fig,ax = plt.subplots(figsize=(16/1.5,9/1.5))
-        ax.set_aspect('equal')
-        fig.tight_layout()
+        
+        if not args.no_ui:
+            plt.ion()
+            fig,ax = plt.subplots(figsize=(16/1.5,9/1.5))
+            ax.set_aspect('equal')
+            fig.tight_layout()
         
         endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic)
         # for ep in endpoints:
@@ -782,13 +912,12 @@ def main():
                                 timeshifts,
                                 threshold_shift,
                                 args.cmd_shift*expected_speed/60,
-                                endpoints,
+                                pd.Timedelta(f"{args.time_threshold} minute"),
+                                pd.Timedelta(f"{args.final_time} minute"),
                                 max_reschedule=args.max_reschedule,
                                 separation=args.mdist,
                                 wind_x=float(args.wind[0]),
                                 wind_y=float(args.wind[1]))
-        
-        sim.attach_axes(ax)
         
         if geometric_obstacle_json_path is not None:
             sim.geometric_obstacle_json_path = geometric_obstacle_json_path
@@ -796,9 +925,10 @@ def main():
             sim.influence_circle = influence_circle
             x,y,_ = influence_circle.to_xy_NM(transformer)
             # The plot uses NM, it is easier for distance comparison.
-            ax.add_patch(
-                Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
-            )
+            if not args.no_ui:
+                ax.add_patch(
+                    Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
+                )
         
         
         # try:
@@ -818,14 +948,21 @@ def main():
         
         ## Run simulation ##
         
+        sim.setup_simulation(endpoints)
         
+        if not args.no_ui:
+            sim.attach_axes(ax)
         
-        sim.simulate(pd.Timedelta(f"{args.timestep} minute"),
-            pd.Timedelta(f"{args.time_threshold} minute"),
-            pd.Timedelta(f"{args.final_time} minute"),
-            args.threads
-        )
+        start_time = time()
         
+        if args.profile:
+            print("Profiling simulation...")
+            cProfile.runctx('sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)', globals(), locals(),filename='simulation_profile.prof')
+        else:
+            sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)
+        
+        end_time = time()
+        print(f"Simulation time: {end_time - start_time:.2f} seconds")
         cont = input("Enter 'y' to restart simulation with the next day data, quit otherwise: ")
         if cont != 'y':
             break
