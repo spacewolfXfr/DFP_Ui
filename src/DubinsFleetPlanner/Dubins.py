@@ -364,7 +364,7 @@ class BasicPath:
             return self.p1
         
     def pose_at(self,t:float) -> Pose3D:
-        assert np.isclose(self.p3,0.)
+        # assert np.isclose(self.p3,0.)
         z = self.z + t*self.p3
         
         if self.type == DubinsMove.STRAIGHT:
@@ -689,15 +689,13 @@ class FleetPlan:
         return self.sample_poses(np.ceil(self.duration*fps))
     
     def remove_path(self,ac_id:int|typing.Iterable[int]):
-        if type(ac_id) is int:
+        if isinstance(ac_id,int):
             ids = [ac_id]
         else:
             ids = ac_id
         
-        locs = []
-        
-        for loc in locs:
-            del self.trajectories[loc]
+        for id in ids:
+            del self.trajectories[id]
     
     def generate_id_name_dict(self) -> dict[int,str]:
         output = dict()

@@ -187,7 +187,7 @@ class ArrivalsSimulator:
     schedule_counters:dict[int,int]   = dataclasses.field(init=False) # Dict from AC id to number of reschedulings
     nopath_counter:dict[int,int] = dataclasses.field(init=False) # Dict from AC id to number of times no path was found
     line_buffersize:int = 20 # Number of past points kept in visualisation
-    
+    __schedules_count:int = 0 # Number of calls to the solver
     
     ## Timekeeping
     __last_global_schedule:pd.Timestamp     = dataclasses.field(init=False)
@@ -208,6 +208,10 @@ class ArrivalsSimulator:
     __label_dict:dict[int,Text]     = dataclasses.field(default_factory=dict,init=False)
     __min_dist_line:typing.Optional[Line2D] = dataclasses.field(default=None,init=False)
     
+    @property
+    def schedules_count(self) -> int:
+        return self.__schedules_count
+    
     def __setup_sim(self):
         assert self.tasklist is not None and len(self.tasklist) > 0, "No tasks to simulate"
         
@@ -220,6 +224,7 @@ class ArrivalsSimulator:
         self.__task_index = dict()
         self.__encountered_exception = None
         self.__last_schedules = dict()
+        self.__schedules_count = 0
         
         self.__axes = None
         
@@ -449,6 +454,7 @@ class ArrivalsSimulator:
             
             ## Call the solver
             try:
+                self.__schedules_count += 1
                 solve_problem(
                     self.solver_path,
                     self.input_csv_path,
@@ -815,9 +821,9 @@ def main():
     parser.add_argument('-v','--speed',type=float,help='Nominal speed for aircraft, in knots. Default to 200.',default=200)
     parser.add_argument('-r','--turn-radius',dest='turn_radius',
         type=float, help='Minimal turn radius for all aircraft. Default to 1.33 NM (full turn in 2 minutes at 250 kt)',default=1.33)
-    parser.add_argument('-w','--wind',dest='wind', nargs=2,
-                        help='XY Wind, as a pair of values (X,Y). Default to (0,0), i.e. no wind.',
-                        default=(0,0))
+    # parser.add_argument('-w','--wind',dest='wind', nargs=2,
+    #                     help='XY Wind, as a pair of values (X,Y). Default to (0,0), i.e. no wind.',
+    #                     default=(0,0))
     
     parser.add_argument('--data',help='A Traffic-compatible data file. If not set, use the sample dataset of Traffic',default=None)
     parser.add_argument('--ICAOs',nargs='+',
@@ -893,6 +899,7 @@ def main():
         if filtered_traffic is None:
             print("No flights found for the given ICAO codes. Skipping to next day.")
             continue
+        print(filtered_traffic)
         
         if not args.no_ui:
             plt.ion()
@@ -916,8 +923,9 @@ def main():
                                 pd.Timedelta(f"{args.final_time} minute"),
                                 max_reschedule=args.max_reschedule,
                                 separation=args.mdist,
-                                wind_x=float(args.wind[0]),
-                                wind_y=float(args.wind[1]))
+                                wind_x=0.,#float(args.wind[0]),
+                                wind_y=0.,#float(args.wind[1]))
+        )
         
         if geometric_obstacle_json_path is not None:
             sim.geometric_obstacle_json_path = geometric_obstacle_json_path
@@ -962,7 +970,7 @@ def main():
             sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)
         
         end_time = time()
-        print(f"Simulation time: {end_time - start_time:.2f} seconds")
+        print(f"Simulation time: {end_time - start_time:.2f} seconds. Called solver {sim.schedules_count} times.")
         cont = input("Enter 'y' to restart simulation with the next day data, quit otherwise: ")
         if cont != 'y':
             break

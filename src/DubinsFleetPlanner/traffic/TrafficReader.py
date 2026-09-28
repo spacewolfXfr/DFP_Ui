@@ -35,7 +35,7 @@ def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp'
         df = pd.read_parquet(input_file,columns=[time_column,id_column])
     except Exception as e:
         print(f"Error reading Parquet file: {e}")
-        print("Assuming it was because there is not id... Falling back to icao24")
+        print(f"Assuming the error is due to column {id_column} missing... Falling back to icao24")
         id_column = 'icao24'
         df = pd.read_parquet(input_file,columns=[time_column,id_column])
 
@@ -65,7 +65,7 @@ def filter_traffic(traffic:Traffic,ICAO_set:typing.Iterable[str]|Airports,maxdis
         flight.data['departing_airport'] = departing.icao if departing is not None else None
         return landing is not None or departing is not None
 
-    good_traffic = traffic.pipe(filter_fun).eval(thread_count())
+    good_traffic = traffic.assign_id().pipe(filter_fun).eval(thread_count())
     if good_traffic is None or len(good_traffic) == 0:
         return None
     

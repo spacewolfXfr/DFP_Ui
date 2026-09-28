@@ -6,11 +6,13 @@ import pyproj
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
 
-import traffic
-
 from traffic.core.structure import Airport
 from traffic.data import airports
 from traffic.data.basic.airports import Airports
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from cartes.crs import UTM,Lambert93
 
 def get_airport(icao:str) -> Airport:
     return airports[icao]
@@ -76,3 +78,15 @@ def get_airport_latlon_transformer(port:Airport) -> pyproj.Transformer:
         "EPSG:4326",   # WGS84 (lat, lon)
         utm_crs,       # UTM (x, y)
     )
+    
+def display_airport(airport:Airport) -> None:
+    wgs84_to_local = get_airport_latlon_transformer(airport)
+    dest_proj = UTM(zone=wgs84_to_local.target_crs.to_dict()['zone'], southern_hemisphere=airport.latitude < 0)
+    fig,ax = plt.subplots(figsize=(10, 10),subplot_kw={"projection": Lambert93()})
+    ax.set_title(f"Airport {airport.name} ({airport.icao})")
+    airport.plot(ax=ax, footprint=True,
+                runways=dict(color="#f58518"),  # update default parameters
+                labels=dict(fontsize=12))
+    ax.spines['geo'].set_visible(False)
+        
+    plt.show()

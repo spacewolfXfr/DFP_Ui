@@ -26,7 +26,7 @@ from cartopy import crs as ccrs
 from DubinsFleetPlanner.ioUtils import ACStats
 from DubinsFleetPlanner.thread_estimator import thread_count
 
-from .FlightExtraction import LatlonPose, flight_departing,flight_landing,extract_flight_endpoints,NM_TO_METERS
+from .FlightExtraction import extract_flight_endpoints,NM_TO_METERS
 from .TrafficReader import filter_traffic,iter_flightdata_by_day
 from .AirportHelpers import get_airports,Airports
 
@@ -50,7 +50,7 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
     shifts = (expected_speed/60,expected_speed/60,threshold_shift)
     
     for i,flight in enumerate(traffic):
-        flight.map_leaflet()
+        flight.plot(ax)
         stats = ACStats(
             i,
             expected_speed/60, # Convert from kts (NM/h) to NM/minute

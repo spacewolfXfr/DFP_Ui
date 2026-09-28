@@ -244,8 +244,9 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
         ax.set_xlim(xlim)
     if ylim is not None:
         ax.set_ylim(ylim)
-    
-    ax.set_title(f"Total flight time: {poses_list[-1][0]:.2f}")
+        
+    if not no_legend:
+        ax.set_title(f"Total flight time: {poses_list[-1][0]:.2f}")
     ax.set_xmargin(0.2)
     ax.set_ymargin(0.2)
     
@@ -266,8 +267,12 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
 
     
     fig.tight_layout()
+    if save_fig is not None:
+        fig.savefig(save_fig)
+    
     if show_fig:
         plt.show()
+        
 
 def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:list[BasicPath],
                                      fps:int=30,
@@ -316,6 +321,7 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
         ax.scatter([pose.x],[pose.y],color=color_dict[id],
                    marker='o',label=label,alpha=0.5)
     for id,pose in poses_list[-1][1].items():
+        print(f"Final position of AC {id}: {pose}")
         ax.scatter([pose.x],[pose.y],color=color_dict[id],
                    marker='X',alpha=0.5)
         

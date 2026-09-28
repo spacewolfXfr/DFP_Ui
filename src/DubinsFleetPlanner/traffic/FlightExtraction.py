@@ -7,8 +7,7 @@ import numpy as np
 
 import pandas as pd
 
-import traffic
-from traffic.core import Flight, FlightPlan
+from traffic.core import Flight
 from traffic.core.structure import Airport
 from traffic.data import airports
 from traffic.data.basic.airports import Airports
@@ -122,6 +121,13 @@ def get_ils_second_aligned_datapoint(flight:Flight,airport:str|Airport) -> Optio
     else:
         return ends_sorted.iloc[1]
     
+def get_any_landing_datapoint(flight:Flight) -> Optional[pd.Series]:
+    ends = flight.landing(method='anywhere').next()
+    if ends is None:
+        return None
+    fst_timestamp = ends.data["timestamp"].min() # type: ignore
+    return ends.data[ends.data["timestamp"] == fst_timestamp].iloc[0]
+
 def get_ils_last_aligned_datapoint(flight:Flight,airport:str|Airport) -> Optional[pd.Series]:
     ends = flight.landing(airport,method='aligned_on_ils').next()
     if ends is None:
@@ -281,6 +287,11 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     if dest_airport is not None:
         ils_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
         ils_dpt = ils_dpt if ils_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
+        try:
+            ils_dpt = ils_dpt if ils_dpt is not None else get_any_landing_datapoint(flight)
+        except Exception as e:
+            print(f"Error extracting any landing datapoint for flight {flight}: {e}")
+            ils_dpt = None
         # ils_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
         if ils_dpt is not None:
             runway = get_runway(dest_airport,ils_dpt["ILS"])
