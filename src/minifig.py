@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
-from .Poses import poses_XY_dist
-from .Dubins import BasicPath,DubinsMove
-from .UI.plotting import plot_BasicPath_obstacle
+from DubinsFleetPlanner.Poses import poses_XY_dist
+from DubinsFleetPlanner.Dubins import BasicPath,DubinsMove
+from DubinsFleetPlanner.UI.plotting import plot_BasicPath_obstacle
 
 
 from scipy.optimize import direct,OptimizeResult
@@ -97,15 +97,15 @@ obbbis = BasicPath(
 
 plot_BasicPath_obstacle(ax,o)[0].set_label('Obstacle')
 
-x=560364.4804656991
-y=6264170.9087238098
-z=485.76514964827174
-v1=0.98469320833843232
-v2=0.1742965445789588
-v3=21.488464696746046
+x=560291.23245170689
+y=6264211.8156874133
+z=0
+v1=0.21275925779930938
+v2=0.97710465059822904
+v3=1.0558624882826717
 v4=0
 m=DubinsMove.STRAIGHT
-length=1352.5650819678467
+length=94.408894350848684
 
 p1 = BasicPath(
     m,
@@ -117,35 +117,53 @@ p1_line = plot_BasicPath_obstacle(ax,p1)[0]
 p1_line.set_color('b')
 p1_line.set_label('Candidate')
 
-print(min_path_dist(p1,o))
-print(min_straight_lstsq(p1,o))
+# print(min_path_dist(p1,o))
+# print(min_straight_lstsq(p1,o))
 
-done(ax)
-
+x_2=560350.40300402255
+y_2=6264295.5526868291
+z_2=0
+v1_2=40
+v2_2=-0.025000000000000001
+v3_2=2.0122086898494311
+v4_2=2.927194645492265
+m_2=DubinsMove.RIGHT
+length_2=179.91963889148647
 p2 = BasicPath(
-    DubinsMove.STRAIGHT,
-    71.080377549109386,
-    22.153456264911696,
-    -123.77352214838169,
-    0,
-    -0.14830263340974387,
-    -0.98894202505694706,
-    0,0
+    m_2,
+    length_2,
+    x_2,y_2,z_2,
+    v1_2,v2_2,v3_2,v4_2
 )
 plot_BasicPath_obstacle(ax,p2)[0].set_color('b')
 
+x_3=560350.40300402255
+y_3=6264255.5526868291
+z_3=0
+v1_3=-1
+v2_3=0
+v3_3=-67.777683856776548
+v4_3=0
+m_3=DubinsMove.STRAIGHT
+length_3=92.542398951443545
 p3 = BasicPath(
-    DubinsMove.LEFT,
-    35.462210771003342,
-    -11.516243797058127,
-    -560,
-    0,
-    40,
-    0.025,
-    0,
-    3.8258337111096061
+    m_3,
+    length_3,
+    x_3,y_3,z_3,
+    v1_3,v2_3,v3_3,v4_3
 )
 plot_BasicPath_obstacle(ax,p3)[0].set_color('b')
+
+startx = 560291.23245170689
+starty = 6264211.8156874133
+start_theta = 1.3563983186973685
+endx = 560343.65128891508
+endy = 6264255.5526868291
+end_theta = 3.1415926535897931
+ax.quiver(startx, starty, np.cos(start_theta), np.sin(start_theta), angles='xy', color='g',label='Start Pose')
+ax.quiver(endx, endy, np.cos(end_theta), np.sin(end_theta), angles='xy', color='r',label='End Pose')
+done(ax)
+
 
 p4 = BasicPath(
     DubinsMove.STRAIGHT,
