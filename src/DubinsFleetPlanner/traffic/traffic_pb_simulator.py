@@ -12,6 +12,7 @@ import json
 import copy
 from concurrent.futures import ProcessPoolExecutor
 import itertools
+from enum import IntEnum
 
 import numpy as np
 
@@ -47,6 +48,12 @@ from .TrafficReader import iter_flightdata_by_day,filter_traffic
 from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,transpose_list_of_trajectories
 
 #################### Utility ####################
+
+class VerbosityLevel(IntEnum):
+    SILENT = 0
+    NORMAL = 1
+    VERYVERBOSE = 2
+    VERYVERYVERBOSE = 3
 
 def make_box_boundary_file(xmin:float,xmax:float,ymin:float,ymax:float,filepath:str|pathlib.Path):
         low_left    = (xmin, ymin, 0)
@@ -175,6 +182,7 @@ class ArrivalsSimulator:
     input_csv_path:pathlib.Path                 = pathlib.Path("input_csv.csv")
     geometric_obstacle_json_path:Optional[pathlib.Path]   = None
     
+    verbosity:VerbosityLevel = VerbosityLevel.NORMAL
     
     influence_circle:Optional[InfluenceCircle]  = None # Circle of influence for the solver, in (lat,lon,radius) in NM. If None, no influence circle is used.
     __xy_circle:Optional[tuple[float,float,float]] = dataclasses.field(default=None,init=False) # Circle of influence for the solver, in (x,y,radius) in NM. If None, no influence circle is used.
@@ -302,7 +310,7 @@ class ArrivalsSimulator:
         
         ### Time forward
         new_t = timedelta + self.__t
-        print(new_t.strftime("%Y-%m-%d %H:%M:%S"))
+        # print(new_t.strftime("%Y-%m-%d %H:%M:%S"))
         
         ### Metadata
         if self.influence_circle is not None and self.__xy_circle is None:
@@ -419,9 +427,7 @@ class ArrivalsSimulator:
         # Compute which aircraft can be rescheduled
         if self.__t - self.__last_global_schedule < self.reschedule_threshold and len(unplanned_task) == 0:
             candidate_acs = set()
-            print("Too early to reschedule")
-        else:
-            print(f"Candidate aircraft: {candidate_acs}")
+            # print("Too early to reschedule")
         
         # If some aircraft have to be rescheduled, do it
         success_schedule = True
@@ -530,11 +536,11 @@ class ArrivalsSimulator:
                 self.__encountered_exception = e
                 success_schedule = False
                 print(f"EXCEPTION: {e}")
-                
-                
+                        
         if self.__axes is not None:
             self.__update_axes(output, new_t, self.scheduled)
             self.__axes.set_title(str(new_t))
+            plt.pause(0.001)
             
         return output, success_schedule
 
@@ -585,60 +591,60 @@ class ArrivalsSimulator:
             self.__color_dict[t.stats.id] = color
                 
         
-        if set_xylims:
-            maxx = -np.inf
-            maxy = -np.inf
-            minx = np.inf
-            miny = np.inf
+        maxx = -np.inf
+        maxy = -np.inf
+        minx = np.inf
+        miny = np.inf
             
-            for t in self.tasklist:
-                start_p = t.start.to_pose3D(self.transformer,True)
-                end_p = t.end.to_pose3D(self.transformer,True)
-                
-                maxx = max(maxx,start_p.x)
-                maxx = max(maxx,end_p.x)
-                
-                maxy = max(maxy,start_p.y)
-                maxy = max(maxy,end_p.y)
-                
-                minx = min(minx,start_p.x)
-                minx = min(minx,end_p.x)
-                
-                miny = min(miny,start_p.y)
-                miny = min(miny,end_p.y)
-                
-                end_proj = t.end.project(self.threshold_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
-                
-                color = self.__color_dict[t.id]
-                if t.dest_airport is not None and t.dest_ICAO is not None and t.dest_runway is not None:
-                    if (t.dest_ICAO,t.dest_runway) not in self.__dest_dict:
-                        
-                        rw_1 = get_runway(t.dest_airport,t.dest_runway)
-                        rw_2 = get_runway(t.dest_airport,get_other_runway_name(t.dest_runway))
-                        
-                        assert rw_1 is not None
-                        assert rw_2 is not None
-                        
-                        proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
-                        proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
-                        
-                        dest_line = self.__axes.plot(
-                            [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
-                            linestyle='-',
-                            alpha=0.5,
-                            color=color,
-                            label=f"{t.dest_ICAO} : {t.dest_runway}"
-                        )[0]
-                        
-                        self.__dest_dict[(t.dest_ICAO,t.dest_runway)] = dest_line
+        for t in self.tasklist:
+            start_p = t.start.to_pose3D(self.transformer,True)
+            end_p = t.end.to_pose3D(self.transformer,True)
+            
+            maxx = max(maxx,start_p.x)
+            maxx = max(maxx,end_p.x)
+            
+            maxy = max(maxy,start_p.y)
+            maxy = max(maxy,end_p.y)
+            
+            minx = min(minx,start_p.x)
+            minx = min(minx,end_p.x)
+            
+            miny = min(miny,start_p.y)
+            miny = min(miny,end_p.y)
+            
+            end_proj = t.end.project(self.threshold_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
+            
+            color = self.__color_dict[t.id]
+            if t.dest_airport is not None and t.dest_ICAO is not None and t.dest_runway is not None:
+                if (t.dest_ICAO,t.dest_runway) not in self.__dest_dict:
                     
+                    rw_1 = get_runway(t.dest_airport,t.dest_runway)
+                    rw_2 = get_runway(t.dest_airport,get_other_runway_name(t.dest_runway))
+                    
+                    assert rw_1 is not None
+                    assert rw_2 is not None
+                    
+                    proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
+                    proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
+                    
+                    dest_line = self.__axes.plot(
+                        [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
+                        linestyle='-',
+                        alpha=0.5,
+                        color=color,
+                        label=f"{t.dest_ICAO} : {t.dest_runway}"
+                    )[0]
+                    
+                    self.__dest_dict[(t.dest_ICAO,t.dest_runway)] = dest_line
+        
+        if set_xylims:
             self.__axes.set_xlim(minx,maxx)
             self.__axes.set_ylim(miny,maxy)
-            
-            self.__axes.set_xlabel(f"Easting (NM, {self.transformer.target_crs.name})")
-            self.__axes.set_ylabel(f"Northing (NM, {self.transformer.target_crs.name})")
-            
-            self.__axes.legend()
+        
+        self.__axes.set_xlabel(f"Easting (NM, {self.transformer.target_crs.name})")
+        self.__axes.set_ylabel(f"Northing (NM, {self.transformer.target_crs.name})")
+        
+        self.__axes.legend()
         
     def __remove_from_axes(self,ac_id:int):    
         try:
@@ -776,31 +782,50 @@ class ArrivalsSimulator:
         
     def report(self):
         dts = []
+        ends = []
         for task in self.tasklist:
             # Consider only tasks ended and not removed due to loss of separation
             if task.end_time < self.__t and task.stats.id not in self.removed_ids:
                 dts.append((task.end_time - task.initial_end_time).total_seconds()/60)
+                ends.append(task.end_time)
         
-        min_dt = np.floor(np.min(dts))
-        max_dt = np.ceil(np.max(dts))
-        edges = [min_dt-1] + list(range(-15,15,2)) + [max_dt+1]
+        dts = np.array(dts)
+        ends = np.array(ends)
+        min_dt = int(np.floor(np.min(dts)))
+        max_dt = int(np.ceil(np.max(dts)))
+        abs_max_dt = max(abs(min_dt),abs(max_dt))
+        
+        minrange = -15 if min_dt-1 < -15 else min_dt
+        maxrange = 15 if max_dt+1 > 15 else max_dt
+        edges = [min_dt-1] + list(range(minrange,maxrange,2)) + [max_dt+1]
         
         hist,edges = np.histogram(dts,edges)
         mean = np.mean(dts)
         median = np.median(dts)
         std = np.std(dts)
         
-        fig,ax = plt.subplots(1,1)
-        bars = ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge')
-        ax.bar_label(bars, fontsize=20, color='navy')
-        ax.set_xlabel('Delay (minutes)')
-        ax.set_xticks(edges)
-        ax.set_ylabel('Frequency')
-        ax.set_title('Distribution of Flight Delays ({} flights ; {} removed)'.format(len(dts), len(self.removed_ids)))
-        ax.vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
-        ax.vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
-        ax.vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
-        ax.legend()
+        fig,axes = plt.subplots(2,1)
+        axes:tuple[Axes,Axes]
+        bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge')
+        axes[0].bar_label(bars, fontsize=20, color='navy')
+        axes[0].set_xlabel('Delay (minutes)')
+        axes[0].set_xticks(edges)
+        axes[0].set_ylabel('Frequency')
+        axes[0].set_title('Distribution of Flight Delays ({} flights ; {} removed)'.format(len(dts), len(self.removed_ids)))
+        axes[0].vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
+        axes[0].vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
+        axes[0].vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
+        axes[0].legend()
+        
+        cmap = plt.get_cmap('coolwarm')
+        colors = cmap((1+dts/abs_max_dt)/2)
+        
+        
+        axes[1].scatter(ends, dts, c=colors, edgecolors='k')
+        axes[1].set_xlabel('End Time')
+        axes[1].set_ylabel('Delay (minutes)')
+        axes[1].set_title('Flight Delays Over Time')
+        axes[1].grid(True)
         
         fig.show()
         
@@ -854,8 +879,8 @@ def main():
                         help="Number of threads to be used by the solver. 0 allows it to autoselect. Default to 0.",default=0)
     parser.add_argument('--profile',dest="profile",action='store_true',
                         help="If set, profile the simulation and print the results at the end. Default to False.",default=False)
-    parser.add_argument('--no-ui',dest="no_ui",action='store_true',
-                        help="If set, do not display the simulation UI. Default to False.",default=False)
+    parser.add_argument('-ui',dest="set_ui",action='store_true',
+                        help="If set, display the simulation UI.")
     args = parser.parse_args()
 
     solver = args.solver
@@ -901,11 +926,12 @@ def main():
             continue
         print(filtered_traffic)
         
-        if not args.no_ui:
+        if args.set_ui:
             plt.ion()
             fig,ax = plt.subplots(figsize=(16/1.5,9/1.5))
             ax.set_aspect('equal')
             fig.tight_layout()
+            plt.show()
         
         endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic)
         # for ep in endpoints:
@@ -933,7 +959,7 @@ def main():
             sim.influence_circle = influence_circle
             x,y,_ = influence_circle.to_xy_NM(transformer)
             # The plot uses NM, it is easier for distance comparison.
-            if not args.no_ui:
+            if args.set_ui:
                 ax.add_patch(
                     Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
                 )
@@ -958,7 +984,8 @@ def main():
         
         sim.setup_simulation(endpoints)
         
-        if not args.no_ui:
+        # If UI is enabled, attach the axes to the simulation
+        if args.set_ui:
             sim.attach_axes(ax)
         
         start_time = time()

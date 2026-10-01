@@ -39,7 +39,7 @@ def main():
     
     airport_icao = args.airport
     airport = get_airport(airport_icao)
-    print(f"Airport {airport.name} ({airport.icao}) located at lat {airport.latitude}, lon {airport.longitude} (bounds: {airport.bounds})")
+    print(f"Airport {airport.name} ({airport.icao}) located at lat {airport.latitude}, lon {airport.longitude}")
     # display_airport(airport)
     
     datetime_start = datetime_from_epoch_or_iso8601(args.start)

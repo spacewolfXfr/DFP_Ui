@@ -162,6 +162,7 @@ class FlightEndpoints:
     initial_end_time:pd.Timestamp
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
     start_airport:Optional[Airport] = None
+    start_runway:Optional[str]      = None
     dest_airport:Optional[Airport]  = None
     dest_runway:Optional[str]       = None
     planned:bool                    = False
@@ -174,6 +175,10 @@ class FlightEndpoints:
     def id(self,_id:int):
         self.stats.id = _id
         
+    @property
+    def start_ICAO(self) -> Optional[str]:
+        return self.start_airport.icao if self.start_airport is not None else None    
+    
     @property
     def dest_ICAO(self) -> Optional[str]:
         return self.dest_airport.icao if self.dest_airport is not None else None
@@ -195,6 +200,7 @@ class FlightEndpoints:
             self.initial_end_time,
             self.stats,
             self.start_airport,
+            self.start_runway,
             self.dest_airport,
             self.dest_runway,
             self.planned
@@ -305,9 +311,13 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             print(f"Flight {flight} is landing at airport {dest_airport.icao} but no ILS-aligned point could be found.")
         
     first_dpt = None
+    start_runway = None
     if start_airport is not None:
         first_dpt = get_second_airbone_dpt(flight)
-    
+        takeoff = flight.takeoff(start_airport,method="track_based").next()
+        if takeoff is not None:
+            start_runway = takeoff.runway_max
+
     flight.data.sort_values("timestamp",inplace=True)
     if first_dpt is None:
         first_dpt = flight.data.iloc[1]
@@ -321,7 +331,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         last_dpt["timestamp"],
         last_dpt["timestamp"],
         stats,
-        start_airport,
+        start_airport,start_runway,
         dest_airport,ils_dpt["ILS"] if ils_dpt is not None else None,
     )
     
@@ -334,7 +344,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             ils_dpt["timestamp"],
             ils_dpt["timestamp"],
             stats,
-            start_airport,
+            start_airport,start_runway,
             dest_airport,ils_dpt["ILS"])
         
     return (end_to_end,end_to_ils)
