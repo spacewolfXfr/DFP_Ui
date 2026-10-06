@@ -67,6 +67,7 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
                 if (r[0].dest_ICAO,r[0].dest_runway) not in colordict.keys():
                     colordict[(r[0].dest_ICAO,r[0].dest_runway)] = cmap(cmap_i/cmap_div)
                     cmap_i = (cmap_i+1) % cmap_div
+                color = colordict[(r[0].dest_ICAO,r[0].dest_runway)]
             elif r[0].start_ICAO is not None and r[0].start_runway is not None:
                 if (r[0].start_ICAO,r[0].start_runway) not in colordict.keys():
                     colordict[(r[0].start_ICAO,r[0].start_runway)] = cmap(cmap_i/cmap_div)

@@ -41,8 +41,8 @@ from pyproj import Transformer
 from pitot.geodesy import distance
 
 
-from .AirportHelpers import get_airport, get_airports, get_airport_latlon_transformer
-from .FlightExtraction import FlightEndpoints,LatlonPose,extract_flight_endpoints,flight_landing,NM_TO_METERS,get_other_runway_name,get_runway
+from .AirportHelpers import NM_TO_METERS, InfluenceCircle, get_airports, get_airport_latlon_transformer,get_other_runway_name,get_runway
+from .FlightExtraction import FlightEndpoints,LatlonPose,extract_flight_endpoints
 from .TrafficReader import iter_flightdata_by_day,filter_traffic
 
 from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,transpose_list_of_trajectories
@@ -79,25 +79,6 @@ def make_circle_boundary_file(xc:float,yc:float,radius:float,filepath:str|pathli
         with open(filepath,mode='w') as f:
             json.dump({'sections':sections},f)
             
-
-@dataclasses.dataclass
-class InfluenceCircle:
-    lat:float
-    lon:float
-    radius:float # In NM
-    
-    def to_xy_meters(self,transformer:Transformer) -> tuple[float,float,float]:
-        x,y = transformer.transform(self.lat,self.lon)
-        return (x,y,self.radius*NM_TO_METERS)
-    
-    def to_xy_NM(self,transformer:Transformer) -> tuple[float,float,float]:
-        x,y = transformer.transform(self.lat,self.lon)
-        return (x/NM_TO_METERS,y/NM_TO_METERS,self.radius)
-    
-    @staticmethod
-    def from_xy_meters(x:float,y:float,radius_meters:float,transformer:Transformer) -> InfluenceCircle:
-        lat,lon = transformer.transform(x,y,direction='INVERSE')
-        return InfluenceCircle(lat,lon,radius_meters/NM_TO_METERS)
 
 #################### Ongoing flights simulator ####################
 
@@ -694,6 +675,8 @@ class ArrivalsSimulator:
         for s,p in states:
             id = s.id
             
+            task = self.tasklist[self.__task_index[id]]
+            dest_pose = task.end.to_pose3D(self.transformer,True)
             ## Clean trajs 
             try:
                 self.__traj_dict[s.id].set_visible(False)
@@ -728,15 +711,15 @@ class ArrivalsSimulator:
             try:
                 endpoint = self.__pos_dict[id]
             except KeyError:
-                endpoint = self.__axes.plot([p.x],[p.y],marker='^',markerfacecolor=(0,0,0,0),markeredgecolor=color)[0]
+                endpoint = self.__axes.plot([p.x,dest_pose.x],[p.y,dest_pose.y],linestyle="",marker='^',markerfacecolor=(0,0,0,0),markeredgecolor=color)[0]
                 self.__pos_dict[id] = endpoint
             
             if not self.is_scheduled(id):
                 endpoint.set_marker('P')
             else:
                 endpoint.set_marker('^')
-            endpoint.set_xdata([p.x])
-            endpoint.set_ydata([p.y])
+            endpoint.set_xdata([p.x,dest_pose.x])
+            endpoint.set_ydata([p.y,dest_pose.y])
                 
                 
             try:
@@ -804,9 +787,12 @@ class ArrivalsSimulator:
         median = np.median(dts)
         std = np.std(dts)
         
+        cmap = plt.get_cmap('coolwarm')
+        colors = cmap((1+dts/abs_max_dt)/2)
+        
         fig,axes = plt.subplots(2,1)
         axes:tuple[Axes,Axes]
-        bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge')
+        bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
         axes[0].bar_label(bars, fontsize=20, color='navy')
         axes[0].set_xlabel('Delay (minutes)')
         axes[0].set_xticks(edges)
@@ -817,17 +803,20 @@ class ArrivalsSimulator:
         axes[0].vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
         axes[0].legend()
         
-        cmap = plt.get_cmap('coolwarm')
-        colors = cmap((1+dts/abs_max_dt)/2)
         
         
+        # Lollipop plot
+        axes[1].vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
         axes[1].scatter(ends, dts, c=colors, edgecolors='k')
+        
+        xlims = axes[1].get_xlim()
+        axes[1].hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
         axes[1].set_xlabel('End Time')
         axes[1].set_ylabel('Delay (minutes)')
         axes[1].set_title('Flight Delays Over Time')
-        axes[1].grid(True)
+        axes[1].grid(True,axis='y')
         
-        fig.show()
+        plt.show()
         
 
 
@@ -925,6 +914,7 @@ def main():
             print("No flights found for the given ICAO codes. Skipping to next day.")
             continue
         print(filtered_traffic)
+        print(f"Total flights to process: {len(filtered_traffic.flight_ids)}")
         
         if args.set_ui:
             plt.ion()
@@ -933,11 +923,12 @@ def main():
             fig.tight_layout()
             plt.show()
         
-        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic)
+        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic, influence_circle)
+        print(f"Total flight endpoints generated: {len(endpoints)}")
         # for ep in endpoints:
             # ax.scatter(ep.start.to_pose3D(transformer,True).x,ep.start.to_pose3D(transformer,True).y,marker='o',color='k',alpha=0.2)
             # ax.scatter(ep.end.to_pose3D(transformer,True).x,ep.end.to_pose3D(transformer,True).y,marker='x',color='k',alpha=0.2)
-                    
+        
         print("\n===== Traffic parsing done! =====\nSetting up simulator...")
         
         sim = ArrivalsSimulator(pathlib.Path(solver),
@@ -1003,7 +994,8 @@ def main():
             break
 
 def __wrapped_extract_flight_endpoints(args):
-    flight, airports, expected_speed = args
+    flight, airports, expected_speed, circle = args
+    airports:Airports
     
     id = flight.flight_id.split('_')[1]
     
@@ -1015,17 +1007,21 @@ def __wrapped_extract_flight_endpoints(args):
             )
     
     
-    o = extract_flight_endpoints(flight,airports,stats,0)
-    return o[1] if o is not None and o[1] is not None else None
+    o = extract_flight_endpoints(flight,airports,stats,circle,0)
+    if o is None:
+        return None
+    else:
+        return o[1] if o[1] is not None else None
 
-def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_traffic:Traffic) -> list[FlightEndpoints]:
+def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_traffic:Traffic, influence_circle:Optional[InfluenceCircle]) -> list[FlightEndpoints]:
     endpoints = []
     
     number_of_flights = filtered_traffic.flight_ids.__len__()
         
     args_it = zip(filtered_traffic.iterate(),
                   itertools.repeat(airports, number_of_flights),
-                  itertools.repeat(expected_speed, number_of_flights))
+                  itertools.repeat(expected_speed, number_of_flights),
+                  itertools.repeat(influence_circle, number_of_flights))
 
     
     
@@ -1033,7 +1029,6 @@ def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_t
         endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
     
     endpoints = [ep for ep in endpoints if ep is not None]
-    
     
     return endpoints
     

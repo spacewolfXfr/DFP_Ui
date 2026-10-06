@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import typing
+import dataclasses
 
 import numpy as np
 
 import pyproj
+from pyproj import Transformer
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
 
@@ -13,6 +17,27 @@ from traffic.data.basic.airports import Airports
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from cartes.crs import UTM,Lambert93
+
+NM_TO_METERS = 1852
+
+@dataclasses.dataclass
+class InfluenceCircle:
+    lat:float
+    lon:float
+    radius:float # In NM
+    
+    def to_xy_meters(self,transformer:Transformer) -> tuple[float,float,float]:
+        x,y = transformer.transform(self.lat,self.lon)
+        return (x,y,self.radius*NM_TO_METERS)
+    
+    def to_xy_NM(self,transformer:Transformer) -> tuple[float,float,float]:
+        x,y = transformer.transform(self.lat,self.lon)
+        return (x/NM_TO_METERS,y/NM_TO_METERS,self.radius)
+    
+    @staticmethod
+    def from_xy_meters(x:float,y:float,radius_meters:float,transformer:Transformer) -> InfluenceCircle:
+        lat,lon = transformer.transform(x,y,direction='INVERSE')
+        return InfluenceCircle(lat,lon,radius_meters/NM_TO_METERS)
 
 def get_airport(icao:str) -> Airport:
     return airports[icao]

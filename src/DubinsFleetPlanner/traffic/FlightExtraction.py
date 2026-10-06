@@ -9,7 +9,6 @@ import pandas as pd
 
 from traffic.core import Flight
 from traffic.core.structure import Airport
-from traffic.data import airports
 from traffic.data.basic.airports import Airports
 
 from pyproj import Transformer
@@ -20,9 +19,7 @@ from pitot.geodesy import bearing, destination, distance
 from DubinsFleetPlanner.Poses import Pose3D
 from DubinsFleetPlanner.ioUtils import AC_PP_Problem, ACStats
 
-from .AirportHelpers import get_airport, get_airports, get_runway, get_other_runway_name
-
-NM_TO_METERS = 1852
+from .AirportHelpers import get_airport, get_airports, get_runway, InfluenceCircle, NM_TO_METERS
 
 #################### Pose as Latlon ####################
 
@@ -249,20 +246,23 @@ class FlightEndpoints:
         )
 
 def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[str]|Airports,
-                             stats:ACStats,
+                             stats:ACStats,circle:Optional[InfluenceCircle]=None,
                              threshold_shift:float=20) -> Optional[tuple[FlightEndpoints,Optional[FlightEndpoints]]]:
     """ Given a flight, a list of airports where it could have started or landed (ICAO codes) and a threshold shift, returns:
-    - None if neither takeoff nor landing airport could be confirmed
-    - A pair a FlightEndpoints, one from start to first ILS confirmed alignment, the second from start to the landing runway threshold, shifted by `threshold_shift`. If the landing runway could not be confirmed, the second FlightEndpoints is None.
+    - None if neither takeoff nor landing airport could be confirmed among the candidates ones
+    - A pair a FlightEndpoints. The first one is from the start to the end of the recorded trajectory.
+        The second depends on if it is a departing or arriving flight. In the departing case, the endpoint is set to the influence circle limit (if provided).
+        In the arriving case, it is from start to the landing runway threshold, shifted by `threshold_shift`. If the landing runway could not be confirmed, the second FlightEndpoints is None.
 
     Args:
         flight (Flight): Flight object
         stats (ACStats): Assumed characteristics of the aircraft
         candidate_airports (typing.Iterable[str]|Airports): List of airports where the aircraft possibly landed
+        circle (InfluenceCircle): The influence circle around the airports
         threshold_shift (float, optional): Distance to pre-shift from the landing runway threshold, in Nautical Miles. Defaults to 20 NM.
 
     Returns:
-        Optional[tuple[FlightEndpoints,FlightEndpoints]]: None if no landing could be confirmed, or a pair of endpoints, from start to either first ILS fix or shifted threshold
+        Optional[tuple[FlightEndpoints,FlightEndpoints]]: None if no landing could be confirmed, or a pair of endpoints. The first is from start to end of the recording, the second is adapted to the type of trajectory (departing or arriving).
     """
     if not isinstance(candidate_airports,Airports):
         candidate_airports = get_airports(candidate_airports)
@@ -286,43 +286,66 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     flight = Flight(flight.data.dropna(subset=["latitude","longitude","altitude","track"]))
     # print(f"Flight endpoints extraction: {len(flight.data)} points after dropping NaN values.\n\tStart airport: {start_airport}\n\tDestination airport: {dest_airport}")
     
-    ils_dpt = None
+    
+    fix_dpt = None
+    
+    ## Check for landing point in the arriving case
     runway  = None
     rw_proj = None
     
-    if dest_airport is not None:
-        ils_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
-        ils_dpt = ils_dpt if ils_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
+    if dest_airport is not None and dest_airport.icao in candidate_airports.data.icao.values:
+        fix_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
+        fix_dpt = fix_dpt if fix_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
         try:
-            ils_dpt = ils_dpt if ils_dpt is not None else get_any_landing_datapoint(flight)
+            fix_dpt = fix_dpt if fix_dpt is not None else get_any_landing_datapoint(flight)
         except Exception as e:
             print(f"Error extracting any landing datapoint for flight {flight}: {e}")
-            ils_dpt = None
-        # ils_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
-        if ils_dpt is not None:
-            runway = get_runway(dest_airport,ils_dpt["ILS"])
-            # print(f"Flight {flight} is landing at airport {dest_airport.icao} on runway {runway.name} (ILS: {ils_dpt['ILS']})")
+            fix_dpt = None
+        # last_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
+        if fix_dpt is not None:
+            runway = get_runway(dest_airport,fix_dpt["ILS"])
+            # print(f"Flight {flight} is landing at airport {dest_airport.icao} on runway {runway.name} (ILS: {fix_dpt['ILS']})")
             if runway is not None:
                 # Turn around and convert NM to meters
                 rw_proj = destination(runway.latitude, runway.longitude, runway.bearing + 180, threshold_shift * NM_TO_METERS)
             else:
-                print(f"Flight {flight} is landing at airport {dest_airport.icao} on ILS {ils_dpt['ILS']} but no runway could be found.")
+                print(f"Flight {flight} is landing at airport {dest_airport.icao} on ILS {fix_dpt['ILS']} but no runway could be found.")
         else:
             print(f"Flight {flight} is landing at airport {dest_airport.icao} but no ILS-aligned point could be found.")
-        
+    
+    
+    ## Check for takeoff point in the departing case, as well as the influence circle limit if provided
     first_dpt = None
     start_runway = None
-    if start_airport is not None:
+    if start_airport is not None and start_airport.icao in candidate_airports.data.icao.values:
         first_dpt = get_second_airbone_dpt(flight)
         takeoff = flight.takeoff(start_airport,method="track_based").next()
         if takeoff is not None:
             start_runway = takeoff.runway_max
+        
+        if circle is not None:
+            # Find the first point outside the influence circle
+            prev_row = None
+            for _,row in flight.data.iterrows():
+                if prev_row is not None:
+                    d = distance(row["latitude"],row["longitude"],circle.lat,circle.lon)
+                    if d > circle.radius*NM_TO_METERS:
+                        fix_dpt = prev_row
+                        break
+                prev_row = row
 
     flight.data.sort_values("timestamp",inplace=True)
     if first_dpt is None:
         first_dpt = flight.data.iloc[1]
     
     last_dpt = flight.data.iloc[-2]
+    
+    dest_runway = None
+    if fix_dpt is not None:
+        try:
+            dest_runway = fix_dpt["ILS"]
+        except KeyError:
+            pass
     
     end_to_end = FlightEndpoints(
         flight_datapoint_to_pose(first_dpt),
@@ -332,19 +355,30 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         last_dpt["timestamp"],
         stats,
         start_airport,start_runway,
-        dest_airport,ils_dpt["ILS"] if ils_dpt is not None else None,
+        dest_airport,dest_runway,
     )
     
     end_to_ils = None
-    if ils_dpt is not None and rw_proj is not None:
-        end_to_ils = FlightEndpoints(
-            flight_datapoint_to_pose(first_dpt),
-            first_dpt["timestamp"],
-            LatlonPose(rw_proj[0],rw_proj[1],last_dpt["altitude"],rw_proj[2]),
-            ils_dpt["timestamp"],
-            ils_dpt["timestamp"],
-            stats,
-            start_airport,start_runway,
-            dest_airport,ils_dpt["ILS"])
+    if fix_dpt is not None:
+        if rw_proj is not None:
+            end_to_ils = FlightEndpoints(
+                flight_datapoint_to_pose(first_dpt),
+                first_dpt["timestamp"],
+                LatlonPose(rw_proj[0],rw_proj[1],fix_dpt["altitude"],rw_proj[2]),
+                fix_dpt["timestamp"],
+                fix_dpt["timestamp"],
+                stats,
+                start_airport,start_runway,
+                dest_airport,fix_dpt["ILS"])
+        elif fix_dpt is not None:
+            end_to_ils = FlightEndpoints(
+                flight_datapoint_to_pose(first_dpt),
+                first_dpt["timestamp"],
+                flight_datapoint_to_pose(fix_dpt),
+                fix_dpt["timestamp"],
+                fix_dpt["timestamp"],
+                stats,
+                start_airport,start_runway,
+                dest_airport,None)
         
     return (end_to_end,end_to_ils)
