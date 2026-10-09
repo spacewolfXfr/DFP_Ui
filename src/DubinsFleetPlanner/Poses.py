@@ -39,6 +39,9 @@ class Pose3D:
     def undefined() -> Pose3D:
         return Pose3D(np.nan,np.nan,np.nan,np.nan)
     
+    def is_defined(self) -> bool:
+        return np.isfinite(self.x) and np.isfinite(self.y) and np.isfinite(self.z) and np.isfinite(self.theta)
+    
     def to2D(self) -> Pose2D:
         return Pose2D(self.x,self.y,self.theta)
         
@@ -82,7 +85,11 @@ def min_XY_dist(poses:list[Pose3D]) -> tuple[float,int,int]:
     i2 = 0
     
     for i in range(n):
+        if not (np.isfinite(poses[i].x) and np.isfinite(poses[i].y)):
+            continue
         for j in range(i+1,n):
+            if not (np.isfinite(poses[j].x) and np.isfinite(poses[j].y)):
+                continue
             dist = poses_XY_dist(poses[i],poses[j])
             if dist < mdist:
                 mdist = dist

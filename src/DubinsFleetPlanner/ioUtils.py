@@ -191,6 +191,19 @@ def parse_obstacles_file(file:pathlib.Path) -> list[BasicPath]:
             output.append(parse_section_from_dict(e))
     return output
 
+def parse_dynamic_obstacles_file(file:pathlib.Path) -> list[tuple[ACStats,Path,float]]:
+    output = []
+    with open(file) as f:
+        data = json.load(f)
+        for e in data["trajectories"]:
+            stats,path = parse_trajectory_from_dict(e,False)
+            try:
+                delay = e["delay"]
+            except KeyError:
+                delay = 0.0
+            output.append((stats, path, delay))
+    return output
+
 def straight_sections_compression(paths:list[BasicPath]) -> list[BasicPath]:
     """ If two straight basic paths follow one another, merge them into one. Return a (deep)copy of the list after this transformation.
     THIS DOES NOT CHECK IF THE FOLLOWING STRAIGHTS ARE ACTUALLY COLLINEAR.
@@ -255,9 +268,19 @@ def parse_trajectories_from_JSON(file, straights_compression:bool=False) -> Flee
         
     return output
     
-def print_FleetPlan_to_JSON(file,plan:FleetPlan,subset:typing.Optional[typing.Iterable[int]]=None,overwrite:bool=False):
+def print_FleetPlan_to_JSON(file,plan:FleetPlan,subset:typing.Optional[typing.Iterable[int]]=None,
+                            delayed_trajectories:dict[int,tuple[ACStats,Path,float]]=dict(),overwrite:bool=False):
+    output_dict = plan.asdict(subset)
+    if delayed_trajectories:
+        for stats,path,delay in delayed_trajectories.values():
+            output_dict["trajectories"].append({
+                "stats": stats.asdict(),
+                "path": path.asdict(),
+                "delay": delay
+            })
+    
     with open(file,mode='w' if overwrite else 'x') as jsonfile:
-        json.dump(plan.asdict(subset),jsonfile)
+        json.dump(output_dict,jsonfile)
 
 
 def join_trajectories_JSONs(output_file,*input_files):

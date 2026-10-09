@@ -26,9 +26,9 @@ from DubinsFleetPlanner.UI._plotting_extra import linestyle_dict,my_cmap,ColorTy
 
 from DubinsFleetPlanner.Poses import Pose3D,ListOfTimedPoses,DictOfPoseTrajectories,min_XY_dist
 
-from DubinsFleetPlanner.Dubins import DubinsMove,FleetPlan,BasicPath
-from DubinsFleetPlanner.ioUtils import parse_trajectories_from_JSON,parse_trajectories_from_CSV,transpose_list_of_trajectories,parse_obstacles_file
-
+from DubinsFleetPlanner.Dubins import DubinsMove,FleetPlan,BasicPath,ACStats,Path
+from DubinsFleetPlanner.ioUtils import parse_trajectories_from_JSON,parse_trajectories_from_CSV,transpose_list_of_trajectories,parse_obstacles_file,parse_dynamic_obstacles_file
+from DubinsFleetPlanner.DelayedPath import insert_delayed_poses
 
 
 #################### Plotting ####################
@@ -296,43 +296,51 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     if color_dict is None:
         color_dict = dict()
         i = 0
-        for k in poses_dict.keys():
-            color_dict[k] = my_cmap[i % len(my_cmap)]
+        for id in poses_dict.keys():
+            color_dict[id] = my_cmap[i % len(my_cmap)]
             i += 1
     
     # Plot background lines
     plot_several_pose2d_sequences(ax,poses_dict,color_dict,False,False,False,0.2)
     
     # Setup artists for animation
-    keys = list(poses_list[0][1].keys())
+    keys = list(poses_dict.keys())
     keys.sort()
     
     init_poses = [poses_list[0][1][k] for k in keys]
     init_xs = [p.x for p in init_poses]
     init_ys = [p.y for p in init_poses]
-    init_thetas = [p.theta for p in init_poses]
     init_colors = [color_dict[t] for t in keys]
     
-    for id,pose in zip(keys,init_poses):
+    pos_artist = ax.scatter(
+            init_xs,init_ys,
+            color=init_colors,label="Aircraft positions",marker='+'
+        )
+    
+    first_poses = []
+    for id,tposes in poses_dict.items():
         label = f"AC: {id}"
         if name_dict is not None:
             label += " " + name_dict[id]
             
-        ax.scatter([pose.x],[pose.y],color=color_dict[id],
-                   marker='o',label=label,alpha=0.5)
-    for id,pose in poses_list[-1][1].items():
-        print(f"Final position of AC {id}: {pose}")
-        ax.scatter([pose.x],[pose.y],color=color_dict[id],
+        i = 0
+        while not tposes[i][1].is_defined():
+            i += 1
+            
+        ax.scatter([tposes[i][1].x],[tposes[i][1].y],color=color_dict[id],
+                    marker='o',label=label,alpha=0.5)
+        first_poses.append(tposes[i][1])
+        while i < len(tposes) and tposes[i][1].is_defined():
+            i += 1
+        ax.scatter([tposes[i-1][1].x],[tposes[i-1][1].y],color=color_dict[id],
                    marker='X',alpha=0.5)
-        
     
-    pos_artist = ax.scatter(
-        init_xs,init_ys,
-        color=init_colors,label="Aircraft positions",marker='+'
-    )
+    first_xs = [p.x for p in first_poses]
+    first_ys = [p.y for p in first_poses]
+    first_thetas = [p.theta for p in first_poses]
     
     dirs_artist = ax.quiver(
-        init_xs,init_ys,np.cos(init_thetas),np.sin(init_thetas),
+        first_xs,first_ys,np.cos(first_thetas),np.sin(first_thetas),
         color=init_colors,label="Aircraft direction",
         angles='xy',**ARROWS_SCALING
     )
@@ -399,14 +407,8 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
         
         dirs_artist.set_offsets(offsets)
         dirs_artist.set_UVC(dirs[0],dirs[1])
+        dirs_artist.set_sizes(np.ones(len(offsets)))
         modified_artists.append(dirs_artist)
-        
-        # wind_artist.set_offsets(poses[:,:2]+dirs.T)
-        # modified_artists.append(wind_artist)
-        
-        # speed_artist.set_offsets(poses[:,:2])
-        # speed_artist.set_UVC(dirs[0]+repeated_wind[:,0],dirs[1]+repeated_wind[:,1])
-        # modified_artists.append(speed_artist)
         
         if not(no_legend):
             modified_artists.append(ax.legend())
@@ -453,24 +455,6 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     if show_animation:
         plt.show()
 
-def animate_fleet_plan(plan:FleetPlan,sample_num:int,geo_obstacles:list[BasicPath],fps:int=30,
-                       color_dict:typing.Optional[dict[int,ColorType]]=None,
-                       name_dict:typing.Optional[dict[int,str]]=None,
-                       save_animation:typing.Optional[str]=None,
-                       show_animation:bool=False,
-                       no_legend:bool=False):
-    
-    samples = plan.sample_poses(sample_num)
-    animate_several_pose2d_sequences(samples,geo_obstacles,
-                                     fps,
-                                     color_dict,
-                                     name_dict,
-                                     save_animation,
-                                     show_animation,
-                                     no_legend)
-
-
-
 def main():
     import argparse
     
@@ -488,6 +472,7 @@ def main():
     parser.add_argument('--xlim',nargs=2,type=float,dest='xlim',help="If defined, set the X-axis limits from plotting",default=None)
     parser.add_argument('--ylim',nargs=2,type=float,dest='ylim',help="If defined, set the Y-axis limits from plotting",default=None)
     parser.add_argument('-G','--geo-obstacles',type=str,dest='geo_obstacles_path',help="Path to the geometric obstacles file.",default=None)
+    parser.add_argument('-O','--obstacles',type=str,dest='obstacles_path',help="Path to the dynamic obstacles file.",default=None)
     
     args = parser.parse_args()
     
@@ -503,7 +488,14 @@ def main():
             print(f"Path for obstacles does not point to a file: {args.geo_obstacles_path}")
             exit(1)
         geo_obstacles = parse_obstacles_file(geo_obs_path)
-            
+    
+    dynamic_obstacles = []
+    if args.obstacles_path is not None:
+        dyn_obs_path = pathlib.Path(args.obstacles_path)
+        if not(dyn_obs_path.is_file()):
+            print(f"Path for obstacles does not point to a file: {args.obstacles_path}")
+            exit(1)
+        dynamic_obstacles = parse_dynamic_obstacles_file(dyn_obs_path)
     
     save = args.save
     show_anim = not(args.no_print)
@@ -527,13 +519,18 @@ def main():
         name_dict = plan.generate_id_name_dict()
         ids = name_dict.keys()
         data = plan.sample_poses(sample_num)
-        
         print(" Done!\nCreating animation...")
     else:
         print(f"File extension not handled: {ext}\nExiting...")
         exit(1)
         
-    
+    for stat,p,delay in dynamic_obstacles:
+        if delay > data[-1][0]:
+            continue
+        data = insert_delayed_poses(data, stat, p, delay)
+        if name_dict is not None:
+            name_dict[stat.id] = p.abbr()
+
     min_id = min(ids)
     max_id = max(ids)
     
