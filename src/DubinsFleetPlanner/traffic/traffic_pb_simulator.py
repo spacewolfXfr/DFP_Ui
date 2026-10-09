@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 from time import time
+import datetime
 import typing
 from typing import Optional
 import subprocess
-import pathlib
+import pathlib,tempfile
 import json
 import copy
 from concurrent.futures import ProcessPoolExecutor
@@ -138,10 +139,10 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
         for e in end_extensions:
             cmd.append(str(e))
     
-    print(cmd)
+    # print(cmd)
     output = subprocess.run(cmd)
     # print(output)
-    output.check_returncode()
+    # output.check_returncode()
     return output
 
 @dataclasses.dataclass
@@ -153,15 +154,14 @@ class ArrivalsSimulator:
     cmd_shift:float         # Minimal straight length at the start of newly planned trajectory, in NM
     reschedule_threshold:pd.Timedelta   # How much time must separe two reschedulings of the same aircraft, in pd.Timedelta
     final_time:pd.Timedelta             # How much time must be left before the end of the task to allow rescheduling, in pd.Timedelta
+    lookahead_time:pd.Timedelta = pd.Timedelta(minutes=30)        # How far in the future to look for incoming or departing flights to be added as obstacles, in pd.Timedelta
     
     tasklist:list[FlightEndpoints] = dataclasses.field(default_factory=list)  # List of tasks to be done, sorted by start_time
     removed_ids:set[int] = dataclasses.field(default_factory=set) # Storage for aircraft (id) removed due to minimal separation violation.
 
-    ## Temporary solver files
-    obstacles_json_path:pathlib.Path            = pathlib.Path("obstacles_json.json")
-    output_json_path:pathlib.Path               = pathlib.Path("output_json.json")
-    input_csv_path:pathlib.Path                 = pathlib.Path("input_csv.csv")
-    geometric_obstacle_json_path:Optional[pathlib.Path]   = None
+    ## Solver files
+    geometric_obstacle_json_path:Optional[pathlib.Path]   = None # Given by the user
+    # The others are dynamically generated
     
     verbosity:VerbosityLevel = VerbosityLevel.NORMAL
     
@@ -199,7 +199,12 @@ class ArrivalsSimulator:
     
     @property
     def schedules_count(self) -> int:
-        return self.__schedules_count
+        return self.__schedules_count    
+    
+    tempdir = tempfile.gettempdir()
+    now = datetime.datetime.now()
+    input_file = pathlib.Path(tempdir) / f"{now.strftime('%y-%m-%d_%H:%M:%S.%f')}_input.csv"
+    output_file = pathlib.Path(tempdir) / f"{now.strftime('%y-%m-%d_%H:%M:%S.%f')}_output.json"
     
     def __setup_sim(self):
         assert self.tasklist is not None and len(self.tasklist) > 0, "No tasks to simulate"
@@ -289,6 +294,7 @@ class ArrivalsSimulator:
              threads:int=0) -> tuple[list[tuple[ACStats,Pose3D]],bool]:
         output:list[tuple[ACStats,Pose3D]] = []
         
+        
         ### Time forward
         new_t = timedelta + self.__t
         # print(new_t.strftime("%Y-%m-%d %H:%M:%S"))
@@ -299,49 +305,7 @@ class ArrivalsSimulator:
         
         
         ## Check task to be done
-        unplanned_task:set[int] = set()
-        new_paths:dict[int,tuple[ACStats,Path]] = {}
-        for i,t in enumerate(self.tasklist):
-            id = t.stats.id
-            
-            # Task is removed due to loss of separation: skip it
-            if id in self.removed_ids:
-                continue
-            
-            # Task already ended: remove drawing
-            if t.end_time <= new_t:
-                if (new_t - t.end_time) > timedelta*10:
-                    self.__remove_from_axes(id)
-                continue
-            
-            # Task yet to begin: break (since tasklist is sorted by start_time)
-            if t.start_time > new_t:
-                break
-            
-            # If the task is planned, skip it
-            if t.planned: 
-                continue
-            else:
-                unplanned_task.add(id)
-            
-            # Otherwise, create a straight plan for it
-            start_pose = None
-            if self.scheduled is not None:
-                try:
-                    _,p = self.scheduled.get_path(id)
-                    start_pose = p.start
-                except KeyError:
-                    pass
-                
-            if start_pose is None:
-                start_pose = t.start.to_pose3D(self.transformer,True)
-            start_pose.z = 0
-            end_pose = copy.copy(start_pose)
-            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
-            
-            new_paths[id] = (t.stats,path)
+        unplanned_task, new_paths, future_paths = self.collect_new_tasks(new_t, timedelta)
         
         # Add the temporary straight paths to the current plan, if any
         if len(new_paths) > 0:
@@ -378,6 +342,7 @@ class ArrivalsSimulator:
                 t2 = self.get_task(ac2)
                 if t1.planned and t2.planned:
                     print(f"Both aircraft are planned!!!")
+                    raise ValueError(f"LOSS OF SEPARATION: {min_dist:.2f} NM between {ac1} and {ac2}. Both aircraft are planned!!!")
                 else:
                     if t1.planned:
                         self.removed_ids.add(ac2)
@@ -407,57 +372,74 @@ class ArrivalsSimulator:
         
         # Compute which aircraft can be rescheduled
         if self.__t - self.__last_global_schedule < self.reschedule_threshold and len(unplanned_task) == 0:
-            candidate_acs = set()
-            # print("Too early to reschedule")
+            candidate_acs.clear()
         
         # If some aircraft have to be rescheduled, do it
         success_schedule = True
         noncandidate_acs = set()
         if len(candidate_acs) > 0:
-            ## Print to JSON the set paths
-            obstacles_exist = False
-            if self.scheduled is not None:
-                print(f"Plan time: {self.scheduled.duration}")
-                noncandidate_acs = set(self.scheduled.ids) - candidate_acs
+            success_schedule = self.solve_path_planning(threads, new_t, future_paths, candidate_acs)
+                        
+        if self.__axes is not None:
+            self.__update_axes(output, new_t, self.scheduled)
+            self.__axes.set_title(str(new_t))
+            plt.pause(0.001)
+            
+        return output, success_schedule
+
+    def solve_path_planning(self, threads:int, new_t:pd.Timestamp, future_paths:dict[int,tuple[ACStats,Path,float]], candidate_acs:set[int]):
+        ## Temporary files for the solver
+        tempdir = tempfile.gettempdir()
+        computer_now = datetime.datetime.now()
+        input_file = pathlib.Path(tempdir) / f"{computer_now.strftime('%y-%m-%d_%H:%M:%S.%f')}_input.csv"
+        output_file = pathlib.Path(tempdir) / f"{computer_now.strftime('%y-%m-%d_%H:%M:%S.%f')}_output.json"
+        obstacles_file = pathlib.Path(tempdir) / f"{computer_now.strftime('%y-%m-%d_%H:%M:%S.%f')}_obstacles.json"
+        success_schedule = True
+        
+        ## Check for aircraft to be considered as obstacles
+        obstacles_exist = False
+        noncandidate_acs = set()
+        if self.scheduled is not None:
+            print(f"Plan time: {self.scheduled.duration}")
+            noncandidate_acs = set(self.scheduled.ids) - candidate_acs
                 
-                if len(noncandidate_acs) > 0:
-                    print_FleetPlan_to_JSON(self.obstacles_json_path,self.scheduled,noncandidate_acs,True)
+            if len(noncandidate_acs) > 0:
+                print_FleetPlan_to_JSON(obstacles_file,self.scheduled,noncandidate_acs,future_paths,True)
                 
-                    obstacles_exist = True
+                obstacles_exist = True
             
             
-            ## Print to CSV the problems to solve
-            pp_problems = []
-            for id in candidate_acs:
-                i = self.__task_index[id]
-                task = self.tasklist[i]
-                ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts,True,False) # This forces the Z values to all be 0. Be warned when trying to implement 3D control!
-                if self.scheduled is not None and id in self.scheduled.ids:
-                    _,p = self.scheduled.get_path(id)
-                    ppp.start = p.start
-                pp_problems.append(ppp)
-                
-            write_pathplanning_problem_to_CSV(self.input_csv_path,pp_problems,True)
+        ## Print to CSV the problems to solve
+        pp_problems = []
+        for id in candidate_acs:
+            i = self.__task_index[id]
+            task = self.tasklist[i]
+            ppp = task.to_AC_PP_Problem(self.transformer,self.timeshifts,True,False) # This forces the Z values to all be 0. Be warned when trying to implement 3D control!
+            if self.scheduled is not None and id in self.scheduled.ids:
+                _,p = self.scheduled.get_path(id)
+                ppp.start = p.start
+            pp_problems.append(ppp)
+        write_pathplanning_problem_to_CSV(input_file,pp_problems,True)
             
-            ## Call the solver
-            try:
-                self.__schedules_count += 1
-                solve_problem(
+        ## Call the solver
+        try:
+            self.__schedules_count += 1
+            solver_output = solve_problem(
                     self.solver_path,
-                    self.input_csv_path,
-                    self.output_json_path,
+                    input_file,
+                    output_file,
                     self.separation,
                     (self.wind_x,self.wind_y),
                     threads,
-                    self.obstacles_json_path if obstacles_exist else None,
+                    obstacles_file if obstacles_exist else None,
                     self.geometric_obstacle_json_path if self.geometric_obstacle_json_path is not None and self.geometric_obstacle_json_path.exists() else None,
                     [self.cmd_shift],
                     [self.threshold_shift]
                 )
                 
-                ## Parse the result and merge
-            
-                solved = parse_trajectories_from_JSON(self.output_json_path)
+            ## Parse the result and merge
+            if solver_output.returncode == 0:
+                solved = parse_trajectories_from_JSON(output_file)
                 self.__last_global_schedule = self.__t
                 newly_scheduled = False
                 for s,p in solved.trajectories.values():
@@ -475,11 +457,6 @@ class ArrivalsSimulator:
                     self.scheduled = solved
                 else:
                     self.scheduled.merge(solved)
-                    # if set(self.scheduled.list_ids()) != set(solved.list_ids()) or newly_scheduled:
-                    #    Add new solutions to the existing plan
-                    # else:
-                        # if self.scheduled.sum_of_durations() > solved.sum_of_durations():
-                            # self.scheduled = solved
                     
                 ## Update the task ends with the planning results
                 for s,p in self.scheduled.trajectories.values():
@@ -490,16 +467,16 @@ class ArrivalsSimulator:
                         dinit_duration = (t.end_time - t.initial_end_time).total_seconds()/60
                         if abs(dduration) > 0.1:
                             print(f"Change in arrival for {s.id}: {abs(dinit_duration):.1f} min {'earlier' if dduration < 0 else 'later'}")
-                    
-                    # assert poses_dist_2D(self.tasklist[i].end.to_pose3D(self.transformer,True),p.end) < 1e-3, f"Endpoints do not match for {s.id}: {self.tasklist[i].end.to_pose3D(self.transformer,True)} vs {p.end}"
-                    # p_lat,p_lon = self.transformer.transform(p.end.x*NM_TO_METERS,p.end.y*NM_TO_METERS,direction='INVERSE')
-                    # assert abs(p_lat-self.tasklist[i].end.latitude) < 1e-3, f"Latitudes do not match for {s.id}: {p_lat} vs {self.tasklist[i].end.latitude}"
-                    # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
-                    
+                        
+                        # assert poses_dist_2D(self.tasklist[i].end.to_pose3D(self.transformer,True),p.end) < 1e-3, f"Endpoints do not match for {s.id}: {self.tasklist[i].end.to_pose3D(self.transformer,True)} vs {p.end}"
+                        # p_lat,p_lon = self.transformer.transform(p.end.x*NM_TO_METERS,p.end.y*NM_TO_METERS,direction='INVERSE')
+                        # assert abs(p_lat-self.tasklist[i].end.latitude) < 1e-3, f"Latitudes do not match for {s.id}: {p_lat} vs {self.tasklist[i].end.latitude}"
+                        # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
+                        
                     if self.__axes is not None:
                         poses = [p.pose_at(t) for t in np.linspace(0,p.duration(),50,endpoint=True)]
-                        
                             
+                                
                         c = self.__color_dict[s.id]
                         _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
                         try:
@@ -510,20 +487,85 @@ class ArrivalsSimulator:
                         self.__traj_dict[s.id] = l[0]
                         
                     
-            except Exception as e:
-                if isinstance(e,AssertionError):
-                    raise e
+        except Exception as e:
+            if isinstance(e,AssertionError):
+                raise e
                 
-                self.__encountered_exception = e
-                success_schedule = False
-                print(f"EXCEPTION: {e}")
-                        
-        if self.__axes is not None:
-            self.__update_axes(output, new_t, self.scheduled)
-            self.__axes.set_title(str(new_t))
-            plt.pause(0.001)
+            self.__encountered_exception = e
+            success_schedule = False
+            print(f"EXCEPTION: {e}")
+            raise e
+        return success_schedule
+
+    def collect_new_tasks(self, new_t:pd.Timestamp, timedelta:pd.Timedelta) -> tuple[set[int],dict[int,tuple[ACStats,Path]],dict[int,tuple[ACStats,Path,float]]]:
+        """_summary_
+
+        Args:
+            new_t (pd.Timestamp): Current time
+            timedelta (pd.Timedelta): Time step between previous and current time
+
+        Returns:
+            tuple[set[int],dict[int,tuple[ACStats,Path]],dict[int,tuple[ACStats,Path,float]]]: A tuple containing:
+                - A set of unplanned task IDs
+                - A dictionary containing tasks starting now with their default path (indexed by task ID)
+                - A dictionary containing tasks starting in a near future with their default path (indexed by task ID)
+        """
+        unplanned_task:set[int] = set()
+        new_paths:dict[int,tuple[ACStats,Path]] = {}
+        future_paths:dict[int,tuple[ACStats,Path,float]] = {}
+        for _,t in enumerate(self.tasklist):
+            id = t.stats.id
             
-        return output, success_schedule
+            # Task is removed due to loss of separation: skip it
+            if id in self.removed_ids:
+                continue
+            
+            # Task already ended: remove drawing
+            if t.end_time <= new_t:
+                if (new_t - t.end_time) > timedelta*10:
+                    self.__remove_from_axes(id)
+                continue
+            
+            # Task yet to begin
+            if t.start_time > new_t:
+                # If the task is in the lookahead window, add it to the future paths
+                if t.start_time - new_t <= self.lookahead_time:
+                    start_pose = t.start.to_pose3D(self.transformer,True)
+                    start_pose.z = 0
+                    end_pose = copy.copy(start_pose)
+                    end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+                    end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+                    path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
+                    
+                    future_paths[id] = (t.stats,path,(t.start_time-new_t).total_seconds()/60)
+                else: # Otherise, break (since tasks are sorted by increasing start time)
+                    break
+            
+            # If the task is planned, skip it
+            if t.planned: 
+                continue
+            else:
+                unplanned_task.add(id)
+            
+            # Otherwise, create a straight plan for it
+            start_pose = None
+            if self.scheduled is not None:
+                try:
+                    _,p = self.scheduled.get_path(id)
+                    start_pose = p.start
+                except KeyError:
+                    pass
+                
+            if start_pose is None:
+                start_pose = t.start.to_pose3D(self.transformer,True)
+            start_pose.z = 0
+            end_pose = copy.copy(start_pose)
+            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
+            
+            new_paths[id] = (t.stats,path)
+        return unplanned_task,new_paths,future_paths
 
     def setup_simulation(self,endpoints:list[FlightEndpoints]):
         self.tasklist = endpoints
@@ -858,7 +900,7 @@ def main():
                         help="Triplet (min,max,step) defining the offsets to the reference time for the target times. Defined in minutes. Default to (-10,10,2)",
                         default=(-10,10,2))
     parser.add_argument('-m','--max-reschedule',dest="max_reschedule",type=int,
-                        help="Maximum number of times a flight can be rescheduled. Default to 3.",default=3)
+                        help="Maximum number of times a flight can be rescheduled. Default to 5.",default=5)
     parser.add_argument('-t','--time-threshold',dest='time_threshold',type=float,
                         help="Duration ellapsed after which we reschedule aircraft. Default to 5 minutes.",default=5)
     parser.add_argument('-f','--final-time',dest='final_time',type=float,
