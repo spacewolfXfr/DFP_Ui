@@ -278,6 +278,7 @@ def print_FleetPlan_to_JSON(file,plan:FleetPlan,subset:typing.Optional[typing.It
                 "path": path.asdict(),
                 "delay": delay
             })
+            output_dict["AC_num"] += 1
     
     with open(file,mode='w' if overwrite else 'x') as jsonfile:
         json.dump(output_dict,jsonfile)

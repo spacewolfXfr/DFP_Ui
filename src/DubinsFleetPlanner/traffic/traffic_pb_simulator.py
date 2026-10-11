@@ -139,6 +139,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
         for e in end_extensions:
             cmd.append(str(e))
     
+    print("\n  Sending new problem to solver")
     # print(cmd)
     output = subprocess.run(cmd)
     # print(output)
@@ -535,7 +536,7 @@ class ArrivalsSimulator:
                     end_pose = copy.copy(start_pose)
                     end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
                     end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-                    path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
+                    path = Path.straight_path(start_pose,end_pose,1.)
                     
                     future_paths[id] = (t.stats,path,(t.start_time-new_t).total_seconds()/60)
                 else: # Otherise, break (since tasks are sorted by increasing start time)

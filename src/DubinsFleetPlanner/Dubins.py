@@ -321,11 +321,13 @@ class BasicPath:
         x = point0[0]
         y = point0[1]
         z = point0[2]
-        p1 = speed*(point1[0]-point0[0])/length
-        p2 = speed*(point1[1]-point0[1])/length
-        p3 = speed*(point1[2]-point0[2])/length
+        p1 = point1[0]-point0[0]
+        p2 = point1[1]-point0[1]
+        p3 = point1[2]-point0[2]
         p4 = 0
-        return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
+        output = BasicPath(t,length,x,y,z,p1,p2,p3,p4)
+        output.set_speed(speed)
+        return output
     
     @staticmethod
     def from_circle(cx:float,cy:float,radius:float, cz:float=0.) -> BasicPath:
@@ -410,6 +412,13 @@ class Path:
     end         :Pose3D # Ending pose
     sections    :list[BasicPath]    # List of base primitives describing the shape
     junctions   :list[float] = field(init=False) # List of times at which there is a section change
+    
+    @staticmethod
+    def from_sections_only(sections:list[BasicPath]) -> Path:
+        total_length = sum(s.length for s in sections)
+        start = sections[0].start()
+        end = sections[-1].end()
+        return Path(total_length,start,end,sections)
     
     @staticmethod
     def __compute_junctions(sections:list[BasicPath]) -> list[float]:

@@ -9,8 +9,8 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.legend_handler import HandlerTuple
 
-
-from .Dubins import LRL,RLR,LSL,LSR,RSL,RSR,SLS,SRS, DubinsMove,Pose2D,Pose3D,ACStats,Path,poses_XY_dist
+from .Poses import poses_XY_dist
+from .Dubins import LRL,RLR,LSL,LSR,RSL,RSR,SLS,SRS, DubinsMove,Pose2D,Pose3D,ACStats,Path
 from .DubinsPathFitting import plan_LRL, plan_RLR, plan_LSL, plan_LSR, plan_RSL, plan_RSR, plan_SLS, plan_SRS,\
         plan_LRL_from_straights, plan_RLR_from_straights, plan_LSL_from_straights, plan_LSR_from_straights,\
         plan_RSL_from_straights, plan_RSR_from_straights, plan_SLS_from_straights, plan_SRS_from_straights,\
@@ -363,8 +363,8 @@ def plot_separation_sections(p1:Path, p2:Path, stats1:ACStats, stats2:ACStats, a
     times = np.linspace(0,dur,100)
     pts1 = p1.poses_at(stats1.airspeed*times)
     pts2 = p2.poses_at(stats2.airspeed*times)
-    _, l1s = plot_pose2d_sequence(axe,pts1,False,True,color='k',linestyle='solid',label='Path 1')
-    _, l2s = plot_pose2d_sequence(axe,pts2,False,True,color='k',linestyle='dashed',label='Path 2')
+    _, l1s, _, _ = plot_pose2d_sequence(axe,pts1,False,True,color='k',linestyle='solid',label='Path 1')
+    _, l2s, _, _ = plot_pose2d_sequence(axe,pts2,False,True,color='k',linestyle='dashed',label='Path 2')
     
     ## Compute sections
     lenghts1 = [s.length for s in p1.sections]
@@ -379,7 +379,7 @@ def plot_separation_sections(p1:Path, p2:Path, stats1:ACStats, stats2:ACStats, a
             break
         if abs(sections_durations[i] - sections_durations[i-1]) < 1e-6:
             continue
-        times = np.linspace(sections_durations[i-1],min(sections_durations[i],dur),500)
+        times = np.linspace(sections_durations[i-1],min(sections_durations[i],dur),200)
         
         pts1 = p1.poses_at(stats1.airspeed*times)
         pts2 = p2.poses_at(stats2.airspeed*times)
@@ -387,7 +387,20 @@ def plot_separation_sections(p1:Path, p2:Path, stats1:ACStats, stats2:ACStats, a
         s1 = p1.section_at(stats1.airspeed*(sections_durations[i-1]+sections_durations[i])/2)
         s2 = p2.section_at(stats2.airspeed*(sections_durations[i-1]+sections_durations[i])/2)
         
-        assert s1 is not None and s2 is not None
+        try:
+            assert s1 is not None and s2 is not None
+        except AssertionError as e:
+            axe.legend()
+            axe.set_aspect('equal')
+            
+            ## Hide the initial full paths
+            for l in l1s:
+                l.set_visible(False)
+            for l in l2s:
+                l.set_visible(False)  
+            plt.show()
+            
+            raise e
         
         char1 = 'S' if s1.type == DubinsMove.STRAIGHT else 'C'
         char2 = 'S' if s2.type == DubinsMove.STRAIGHT else 'C'
