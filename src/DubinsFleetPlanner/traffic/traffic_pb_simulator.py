@@ -255,10 +255,10 @@ class ArrivalsSimulator:
             # Reschedule only possible during a straight without incoming turn
             if path.sections[0].type == DubinsMove.STRAIGHT:
                 if len(path.junctions) > 0:
-                    if path.junctions[0] > self.reschedule_threshold.total_seconds()/60:
+                    if path.junctions[0] > task.stats.airspeed*self.reschedule_threshold.total_seconds()/60:
                         can_be_rescheduled = True
                 else:
-                    if path.duration() > self.reschedule_threshold.total_seconds()/60:
+                    if path.total_length > task.stats.airspeed*self.reschedule_threshold.total_seconds()/60:
                         can_be_rescheduled = True
             
             # If geometrically feasible, consider if it is close to end
@@ -463,8 +463,9 @@ class ArrivalsSimulator:
                 for s,p in self.scheduled.trajectories.values():
                     t = self.get_task(s.id)
                     if t.planned:
-                        dduration = (pd.Timedelta(minutes=p.duration()) - (t.end_time - new_t)).total_seconds()/60
-                        t.end_time = pd.Timedelta(minutes=p.duration()) + new_t
+                        path_duration = p.total_length/s.airspeed
+                        dduration = (pd.Timedelta(minutes=path_duration) - (t.end_time - new_t)).total_seconds()/60
+                        t.end_time = pd.Timedelta(minutes=path_duration) + new_t
                         dinit_duration = (t.end_time - t.initial_end_time).total_seconds()/60
                         if abs(dduration) > 0.1:
                             print(f"Change in arrival for {s.id}: {abs(dinit_duration):.1f} min {'earlier' if dduration < 0 else 'later'}")
@@ -475,7 +476,7 @@ class ArrivalsSimulator:
                         # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
                         
                     if self.__axes is not None:
-                        poses = [p.pose_at(t) for t in np.linspace(0,p.duration(),50,endpoint=True)]
+                        poses = [p.pose_at(t) for t in np.linspace(0,p.total_length,50,endpoint=True)]
                             
                                 
                         c = self.__color_dict[s.id]
@@ -536,7 +537,7 @@ class ArrivalsSimulator:
                     end_pose = copy.copy(start_pose)
                     end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
                     end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-                    path = Path.straight_path(start_pose,end_pose,1.)
+                    path = Path.straight_path(start_pose,end_pose)
                     
                     future_paths[id] = (t.stats,path,(t.start_time-new_t).total_seconds()/60)
                 else: # Otherise, break (since tasks are sorted by increasing start time)
@@ -563,7 +564,7 @@ class ArrivalsSimulator:
             end_pose = copy.copy(start_pose)
             end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
             end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
+            path = Path.straight_path(start_pose,end_pose)
             
             new_paths[id] = (t.stats,path)
         return unplanned_task,new_paths,future_paths
@@ -730,7 +731,7 @@ class ArrivalsSimulator:
             if trajs is not None:
                 try:
                     _,path = trajs.get_path(s.id)
-                    poses = [path.pose_at(t) for t in np.linspace(0,path.duration(),50,endpoint=True)]
+                    poses = [path.pose_at(t) for t in np.linspace(0,path.total_length,50,endpoint=True)]
                     c = self.__color_dict[s.id]
                     _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
                     self.__traj_dict[s.id] = l[0]

@@ -56,7 +56,7 @@ def plot_BasicPath_obstacle(ax:Axes,p:BasicPath):
         return ax.plot([start.x,end.x],[start.y,end.y],'k-')
     else:
         poses = []
-        for t in np.linspace(0,p.duration(),100):
+        for t in np.linspace(0,p.length,100):
             poses.append(p.pose_at(t))
         _,lines,_,_ = plot_pose2d_sequence(ax,poses,False,False,color='k',linestyle='-')
         return lines

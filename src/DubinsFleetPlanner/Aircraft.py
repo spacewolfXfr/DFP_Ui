@@ -1,5 +1,6 @@
-from dataclasses import dataclass,asdict
+from dataclasses import dataclass,asdict,field
 import typing
+from math import isnan
 
 @dataclass
 class ACStats:
@@ -7,6 +8,26 @@ class ACStats:
     airspeed    :float # Speed in air referential
     climb       :float # Vertical change in elevation (both directions)
     turn_radius :float # Minimal turn radius
+    target_airspeed:float = field(default=float('nan')) # Target speed at the trajectory end. By default, it is set to airspeed.
+    min_acceleration:float = field(default=0.) # Minimal acceleration (horizontal, along the path). Default to zero (constant speed)
+    max_acceleration:float = field(default=0.) # Maximal acceleration (horizontal, along the path). Default to zero (constant speed)
+    
+    def __post_init__(self):
+        if self.airspeed <= 0:
+            raise ValueError(f"Invalid airspeed {self.airspeed}")
+        if self.climb < 0:
+            raise ValueError(f"Invalid climb {self.climb}")
+        if self.turn_radius <= 0:
+            raise ValueError(f"Invalid turn radius {self.turn_radius}")
+        
+        if isnan(self.target_airspeed):
+            self.target_airspeed = self.airspeed
+        
+        if self.target_airspeed <= 0:
+                raise ValueError(f"Invalid target airspeed {self.target_airspeed}")
+        
+        if self.min_acceleration > self.max_acceleration:
+            raise ValueError(f"Invalid acceleration range [{self.min_acceleration},{self.max_acceleration}]")
     
     def asdict(self) -> dict[str,int|float]:
         return asdict(self)
@@ -43,7 +64,7 @@ class ACOptions:
         )
 
     def asdict(self) -> dict[str,typing.Any]:
-        output = {"ac_id": self.ac_id}
+        output:dict[str,typing.Any] = {"ac_id": self.ac_id}
         if self.extend_start is not None:
             output["extend-start"] = self.extend_start
         if self.extend_end is not None:

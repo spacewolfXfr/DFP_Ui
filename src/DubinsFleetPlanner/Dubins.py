@@ -272,26 +272,34 @@ class BasicPath:
                 raise ValueError(f"Unknown Dubins Move:\n{self.type}")
         elif type(self.type) is not DubinsMove:
             self.type = DubinsMove(self.type)
-            
+
+        if self.type == DubinsMove.STRAIGHT:
+            norm = np.hypot(self.p1, self.p2)
+            if np.isclose(norm, 0.):
+                raise ValueError("A straight path must have non-zero horizontal speed")
+            self.p1 /= norm
+            self.p2 /= norm
+        else:
+            if np.isclose(self.p1, 0.) or np.isclose(self.p2, 0.):
+                raise ValueError("A turn path must have non-zero radius and angular speed")
+            self.p2 = np.sign(self.p2) / self.p1
+                        
     ##### Extra constructors #####
         
     @staticmethod
-    def from_2D(type: DubinsMove, length: float, start:Pose2D, radius:float, speed:float=1.) -> BasicPath:
+    def from_2D(type: DubinsMove, length: float, start:Pose2D, radius:float) -> BasicPath:
         dx = np.cos(start.angle)
-        vx = dx*speed
-        
         dy = np.sin(start.angle)
-        vy = dy*speed
         
         if type is DubinsMove.STRAIGHT:
             return BasicPath(type,length,
                              start.x,start.y,0.,
-                             vx,vy,
+                             dx,dy,
                              0.,0.)
             
         else:
             p1 = radius
-            p2 = speed/radius
+            p2 = 1/radius
             
             if type is DubinsMove.LEFT:
                 cx = start.x - dy*radius
@@ -307,15 +315,15 @@ class BasicPath:
                              p1,p2,0.,p4)
             
     @staticmethod
-    def from_3D(type: DubinsMove, length: float, start:Pose3D, radius:float, speed:float=1.) -> BasicPath:
+    def from_3D(type: DubinsMove, length: float, start:Pose3D, radius:float) -> BasicPath:
         start_2d = start.to2D()
-        result = BasicPath.from_2D(type,length,start_2d,radius,speed)
+        result = BasicPath.from_2D(type,length,start_2d,radius)
         result.z = start.z
         result.p3 = 0.
         return result
     
     @staticmethod
-    def from_2_points(point0:tuple[float,float,float],point1:tuple[float,float,float],speed:float=1.) -> BasicPath:
+    def from_2_points(point0:tuple[float,float,float],point1:tuple[float,float,float]) -> BasicPath:
         t = DubinsMove.STRAIGHT
         length = np.sqrt((point0[0]-point1[0])**2 + (point0[1]-point1[1])**2 + (point0[2]-point1[2])**2)
         x = point0[0]
@@ -325,9 +333,7 @@ class BasicPath:
         p2 = point1[1]-point0[1]
         p3 = point1[2]-point0[2]
         p4 = 0
-        output = BasicPath(t,length,x,y,z,p1,p2,p3,p4)
-        output.set_speed(speed)
-        return output
+        return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
     
     @staticmethod
     def from_circle(cx:float,cy:float,radius:float, cz:float=0.) -> BasicPath:
@@ -342,41 +348,26 @@ class BasicPath:
         p4 = 0.
         return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
     
-    ##### Setters and getters #####
-    
-    def speed(self) -> float:
-        if self.type == DubinsMove.STRAIGHT:
-            output = np.sqrt(self.p1*self.p1 + self.p2*self.p2)
-        else:
-            output = abs(self.p1*self.p2)
-        return output
-    
-    def set_speed(self,v:float):
-        if self.type == DubinsMove.STRAIGHT:
-            cv = self.speed()
-            self.p1 *= v/cv
-            self.p2 *= v/cv
-        else:
-            self.p2 = np.sign(self.p2) * v/self.p1
-    
+    ##### Getters #####
+
     def radius(self) -> float:
         if self.type == DubinsMove.STRAIGHT:
             return 0.
         else:
             return self.p1
         
-    def pose_at(self,t:float) -> Pose3D:
+    def pose_at(self,length:float) -> Pose3D:
         # assert np.isclose(self.p3,0.)
-        z = self.z + t*self.p3
+        z = self.z + length*self.p3
         
         if self.type == DubinsMove.STRAIGHT:
-            x = self.x + t*self.p1
-            y = self.y + t*self.p2
+            x = self.x + length*self.p1
+            y = self.y + length*self.p2
             angle = np.arctan2(self.p2,self.p1)
             return Pose3D(x,y,z,angle)
         else:
             center = np.array([self.x,self.y])
-            a = self.p4 + t*self.p2
+            a = self.p4 + length*self.p2
             
             xy_pos = center + self.p1*np.array([np.cos(a),np.sin(a)])
             
@@ -387,13 +378,7 @@ class BasicPath:
         return self.pose_at(0)
     
     def end(self) -> Pose3D:
-        return self.pose_at(self.length/self.speed())
-    
-    def duration(self) -> float:
-        if self.length == 0.:
-            return 0.
-        else:
-            return self.length/self.speed()
+        return self.pose_at(self.length)
     
     ##### Export #####
     
@@ -411,7 +396,7 @@ class Path:
     start       :Pose3D # Starting pose
     end         :Pose3D # Ending pose
     sections    :list[BasicPath]    # List of base primitives describing the shape
-    junctions   :list[float] = field(init=False) # List of times at which there is a section change
+    junctions   :list[float] = field(init=False) # List of lengths at which there is a section change
     
     @staticmethod
     def from_sections_only(sections:list[BasicPath]) -> Path:
@@ -423,30 +408,22 @@ class Path:
     @staticmethod
     def __compute_junctions(sections:list[BasicPath]) -> list[float]:
         output = []
-        last_time = 0.
-        refspeed = sections[-1].speed()
+        last_length = 0.
         for s in sections[:-1]:
-            assert np.isclose(s.speed(),refspeed)
-            last_time += s.duration()
-            output.append(last_time)
+            last_length += s.length
+            output.append(last_length)
         return output
     
     @staticmethod
-    def straight_path(start:Pose3D,end:Pose3D,speed:float=1.) -> Path:
+    def straight_path(start:Pose3D,end:Pose3D) -> Path:
         length = poses_euclidean_dist(start,end)
-        section = BasicPath.from_2_points((start.x,start.y,start.z),(end.x,end.y,end.z),speed)
+        section = BasicPath.from_2_points((start.x,start.y,start.z),(end.x,end.y,end.z))
         return Path(length,start,end,[section])
     
     def __post_init__(self):
         assert np.isclose(self.total_length, sum(s.length for s in self.sections),1e-4)
         self.junctions = self.__compute_junctions(self.sections)
     
-    def duration(self) -> float:
-        if len(self.junctions) > 0:
-            return self.junctions[-1] + self.sections[-1].duration()
-        else:
-            return self.sections[-1].duration()
-        
     def max_turn_radius(self) -> float:
         output = 0.
         for s in self.sections:
@@ -467,14 +444,14 @@ class Path:
             s.y += dy
             s.z += dz
         
-    def pose_at(self,t:float) -> Pose3D:
+    def pose_at(self,length:float) -> Pose3D:
         section_id = 0
-        time = t
-        if time > self.duration():
+        time = length
+        if time > self.total_length:
             return Pose3D.undefined()
         
-        while section_id < len(self.junctions) and t > self.junctions[section_id]:
-            time -= self.sections[section_id].duration()
+        while section_id < len(self.junctions) and length > self.junctions[section_id]:
+            time -= self.sections[section_id].length
             section_id += 1
         
         if (section_id >= len(self.junctions)):
@@ -482,20 +459,20 @@ class Path:
         else:
             return self.sections[section_id].pose_at(time)
         
-    def poses_at(self,ts:np.ndarray) -> list[Pose3D]:
+    def poses_at(self,lengths:np.ndarray) -> list[Pose3D]:
         # Check ts is sorted
-        assert np.all(ts[:-1] <= ts[1:])
+        assert np.all(lengths[:-1] <= lengths[1:])
         
         section_id = 0
         output = []
         prev_sections_time = 0
         
-        for time in ts:
-            if time > self.duration():
+        for time in lengths:
+            if time > self.total_length:
                 return output
             
             while section_id < len(self.junctions) and time > self.junctions[section_id]:
-                prev_sections_time += self.sections[section_id].duration()
+                prev_sections_time += self.sections[section_id].length
                 section_id += 1
             
             if (section_id >= len(self.junctions)):
@@ -507,16 +484,16 @@ class Path:
     
     def sample(self,num:int) -> list[Pose3D]:
         assert num > 0
-        return self.poses_at(np.linspace(0,self.duration(),num))
+        return self.poses_at(np.linspace(0,self.total_length,num))
     
-    def section_at(self,t:float) -> typing.Optional[BasicPath]:
+    def section_at(self,length:float) -> typing.Optional[BasicPath]:
         section_id = 0
-        time = t
-        if time > self.duration():
+        time = length
+        if time > self.total_length:
             return None
         
-        while section_id < len(self.junctions) and t > self.junctions[section_id]:
-            time -= self.sections[section_id].duration()
+        while section_id < len(self.junctions) and length > self.junctions[section_id]:
+            time -= self.sections[section_id].length
             section_id += 1
         
         if (section_id >= len(self.junctions)):
@@ -535,15 +512,15 @@ class Path:
         return output
     
     def join(self,other:Path):
+        s_length = self.total_length
         self.total_length += other.total_length
         self.end = other.end
-        
-        s_duration = self.duration()
-        self.junctions.append(s_duration)
+
+        self.junctions.append(s_length)
         
         o_junctions = other.junctions.copy()
         for i in range(len(o_junctions)):
-            o_junctions[i] += s_duration
+            o_junctions[i] += s_length
         self.junctions.extend(o_junctions)
         
         self.sections.extend(other.sections)
@@ -553,17 +530,17 @@ class Path:
         return ''.join(s.type.abbr() for s in self.sections)    
             
     
-    def follow_for(self,t:float) -> typing.Optional[Path]:
+    def follow_for(self,length:float) -> typing.Optional[Path]:
         section_id = 0
-        time = t
-        if time > self.duration():
+        remaining_length = length
+        if remaining_length > self.total_length:
             return None
         
-        while section_id < len(self.junctions) and t > self.junctions[section_id]:
-            time -= self.sections[section_id].duration()
+        while section_id < len(self.junctions) and length > self.junctions[section_id]:
+            remaining_length -= self.sections[section_id].length
             section_id += 1
             
-        new_duration = self.duration() - t
+        new_length = self.total_length - length
         new_end     = self.end
         
         if (section_id >= len(self.junctions)):
@@ -571,14 +548,13 @@ class Path:
         else:
             new_sections = self.sections[section_id:]
             
-        new_start   = new_sections[0].pose_at(time)
+        new_start   = new_sections[0].pose_at(remaining_length)
         
         new_start_section = BasicPath.from_3D(
             new_sections[0].type,
-            (new_sections[0].duration()-time)*new_sections[0].speed(),
+            new_sections[0].length-remaining_length,
             Pose3D(new_start.x,new_start.y,new_start.z,new_start.theta),
-            new_sections[0].radius(),
-            new_sections[0].speed()
+            new_sections[0].radius()
         )
         
         if new_sections[0].type == DubinsMove.STRAIGHT:
@@ -590,7 +566,7 @@ class Path:
         
         output = Path(new_length,new_start,new_end,copy.deepcopy(new_sections))
         
-        assert np.isclose(output.duration(),new_duration,1e-4)
+        assert np.isclose(output.total_length,new_length,1e-4)
         
         return output
 
@@ -675,7 +651,7 @@ class FleetPlan:
         wind_dy = self.wind_y*t
         
         for s,traj in self.trajectories.values():
-            p = traj.pose_at(t)
+            p = traj.pose_at(s.airspeed*t)
             p.x += wind_dx
             p.y += wind_dy
             output[s.id] = p
@@ -780,7 +756,7 @@ class FleetPlan:
         
         for stats,path in self.trajectories.values():
             
-            new_path = path.follow_for(time)
+            new_path = path.follow_for(stats.airspeed*time)
             if new_path is None:
                 continue
             else:
@@ -796,9 +772,4 @@ class FleetPlan:
             new_trajs
         )    
         
-    def sum_of_durations(self) -> float:
-        output = 0.
-        for _,p in self.trajectories.values():
-            output += p.duration()
-        return output   
     

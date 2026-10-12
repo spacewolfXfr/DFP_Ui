@@ -32,7 +32,7 @@ def min_path_dist(p:BasicPath,pbis:BasicPath):
         l1 = p.pose_at(v[0])
         l2 = pbis.pose_at(v[1])
         return poses_XY_dist(l1,l2)
-    return direct(opt_fun,[(0,p.duration()),(0,pbis.duration())])
+    return direct(opt_fun,[(0,p.length),(0,pbis.length)])
 
 def min_straight_lstsq(p:BasicPath,pbis:BasicPath):
     assert p.type is DubinsMove.STRAIGHT
@@ -202,9 +202,6 @@ o2 = BasicPath(**{
     'length':9.9999999999999858,
 })
 
-o0.set_speed(1.)
-o1.set_speed(1.)
-o2.set_speed(1.)
 
 o = Path.from_sections_only([o0,o1,o2])
 
