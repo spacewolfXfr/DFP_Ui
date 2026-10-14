@@ -286,7 +286,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     flight = Flight(flight.data.dropna(subset=["latitude","longitude","altitude","track"]))
     # print(f"Flight endpoints extraction: {len(flight.data)} points after dropping NaN values.\n\tStart airport: {start_airport}\n\tDestination airport: {dest_airport}")
     
-    
+    ## Datapoint containing aircraft fix (either for takeoff or landing) and the runway if applicable
     fix_dpt = None
     
     ## Check for landing point in the arriving case
@@ -359,8 +359,12 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     )
     
     end_to_ils = None
+    # A fix has been found
     if fix_dpt is not None:
+        # It is a landing flight, and the runway has been confirmed
         if rw_proj is not None:
+            if not pd.isna(fix_dpt["groundspeed"]):
+                stats.airspeed = fix_dpt["groundspeed"]/60 # Convert from NM/h to NM/min
             end_to_ils = FlightEndpoints(
                 flight_datapoint_to_pose(first_dpt),
                 first_dpt["timestamp"],
@@ -370,7 +374,10 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 stats,
                 start_airport,start_runway,
                 dest_airport,fix_dpt["ILS"])
-        elif fix_dpt is not None:
+        else: # It is a departing flight
+            obj_speed = stats.airspeed
+            stats.airspeed = first_dpt["groundspeed"]/60 if not pd.isna(fix_dpt["groundspeed"]) else stats.target_airspeed
+            stats.target_airspeed = obj_speed
             end_to_ils = FlightEndpoints(
                 flight_datapoint_to_pose(first_dpt),
                 first_dpt["timestamp"],
