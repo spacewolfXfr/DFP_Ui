@@ -433,10 +433,10 @@ class Path:
         return output
     
     @staticmethod
-    def straight_path(start:Pose3D,end:Pose3D) -> Path:
+    def straight_path(start:Pose3D,end:Pose3D,speed:float) -> Path:
         length = poses_euclidean_dist(start,end)
         section = BasicPath.from_2_points((start.x,start.y,start.z),(end.x,end.y,end.z))
-        return Path(length,start,end,[section])
+        return Path(length,start,end,[section],SpeedProfile(speed,0.))
     
     def __post_init__(self):
         assert np.isclose(self.total_length, sum(s.length for s in self.sections),1e-4)
@@ -609,7 +609,9 @@ class Path:
         new_sections[0] = new_start_section
         new_length = sum(s.length for s in new_sections)
         
-        output = Path(new_length,new_start,new_end,copy.deepcopy(new_sections))
+        sprofile = self.speed_profile.shifted_by_time(self.speed_profile.get_time_at_length(length))
+        
+        output = Path(new_length,new_start,new_end,copy.deepcopy(new_sections),sprofile)
         
         assert np.isclose(output.total_length,new_length,1e-4)
         
@@ -800,8 +802,8 @@ class FleetPlan:
         new_trajs:dict[int,tuple[ACStats,Path]] = {}
         
         for stats,path in self.trajectories.values():
-            
-            new_path = path.follow_for(stats.airspeed*time)
+            l = path.length_at_time(time)
+            new_path = path.follow_for(l)
             if new_path is None:
                 continue
             else:
