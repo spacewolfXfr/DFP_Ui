@@ -240,7 +240,9 @@ def parse_trajectory_from_dict(d:dict, straights_compression:bool=False) -> tupl
     if straights_compression:
         sections = straight_sections_compression(sections)
 
-    speed_profile = SpeedProfile(**path_dict.get("speed_profile", {}))
+    speed_profile = SpeedProfile(**path_dict.get("speed_profile",
+                                                 {"base_speed": stats.airspeed,
+                                                  "acceleration": 0.0}))
 
     path = Path(
         path_dict["total_length"],
