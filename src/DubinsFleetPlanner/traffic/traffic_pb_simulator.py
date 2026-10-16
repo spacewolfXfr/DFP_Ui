@@ -104,6 +104,8 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     
     cmd.append('-l')
     
+    cmd.append('--tdist')
+    
     cmd.append('--samples')
     cmd.append('3')
     
@@ -178,6 +180,7 @@ class ArrivalsSimulator:
     nopath_counter:dict[int,int] = dataclasses.field(init=False) # Dict from AC id to number of times no path was found
     line_buffersize:int = 20 # Number of past points kept in visualisation
     __schedules_count:int = 0 # Number of calls to the solver
+    timedistance:bool = False # If True, interpret separation as time-based separation (in minutes, to be multiplied by the speed of the aircraft). If False, interpret separation as distance-based separation (in NM).
     
     ## Timekeeping
     __last_global_schedule:pd.Timestamp     = dataclasses.field(init=False)
@@ -882,7 +885,7 @@ def main():
     # parser.add_argument('-w','--wind',dest='wind', nargs=2,
     #                     help='XY Wind, as a pair of values (X,Y). Default to (0,0), i.e. no wind.',
     #                     default=(0,0))
-    
+    parser.add_argument('--tdist',type=bool,action='store_true',help='If set, interpret mdist as time-based separation (in minutes). Default to False.',default=False)
     parser.add_argument('--data',help='A Traffic-compatible data file. If not set, use the sample dataset of Traffic',default=None)
     parser.add_argument('--ICAOs',nargs='+',
                         help="List of ICAO codes for airports in which to look for landings in the given dataset. Default to LFPO,LFPG,LFPB",
@@ -988,6 +991,8 @@ def main():
                                 wind_y=0.,#float(args.wind[1]))
         )
         
+        sim.timedistance = args.tdist
+        
         if geometric_obstacle_json_path is not None:
             sim.geometric_obstacle_json_path = geometric_obstacle_json_path
         if influence_circle is not None:
@@ -998,7 +1003,6 @@ def main():
                 ax.add_patch(
                     Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
                 )
-        
         
         # try:
         #     b = float(args.border)
