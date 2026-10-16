@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 import math
 
+import numpy as np
 
+from .Poses import Pose3D,poses_XY_dist
 @dataclass
 class SpeedProfile:
     """
@@ -103,3 +105,26 @@ class SpeedProfile:
         )
         output.shift_by_time(time)
         return output
+    
+    
+def min_tdist(tdist:float,points:list[tuple[Pose3D,float]]) -> tuple[float,int,int]:
+    """Given a list of (pose,speed) tuples, find the minimum time-to-collision distance between any two points, and return this value and the indices of the two points."""
+    mdist = np.inf
+    n = len(points)
+    min_i = -1
+    min_j = -1
+    
+    for i in range(n):
+        for j in range(i+1,n):
+            p1,v1 = points[i]
+            p2,v2 = points[j]
+            
+            dist = poses_XY_dist(p1,p2)
+            slack = dist - tdist*max(v1,v2)
+            
+            if slack < mdist:
+                mdist = slack
+                min_i = i
+                min_j = j
+                    
+    return mdist,min_i,min_j

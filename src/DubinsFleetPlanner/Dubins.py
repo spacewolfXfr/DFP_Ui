@@ -24,7 +24,7 @@ import copy
 
 import numpy as np
 
-from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_euclidean_dist
+from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_euclidean_dist,poses_dist_2D,poses_XY_dist
 from .Aircraft import ACStats
 from .SpeedProfile import SpeedProfile
 
@@ -280,6 +280,7 @@ class BasicPath:
                 raise ValueError("A straight path must have non-zero horizontal speed")
             self.p1 /= norm
             self.p2 /= norm
+            assert abs(self.length - poses_XY_dist(self.start(),self.end())) < 1e-4, f"Straight path length {self.length} does not match start and end points distance {poses_XY_dist(self.start(),self.end())}"
         else:
             if np.isclose(self.p1, 0.) or np.isclose(self.p2, 0.):
                 raise ValueError("A turn path must have non-zero radius and angular speed")
@@ -372,13 +373,15 @@ class BasicPath:
         
     def pose_at_length(self,length:float) -> Pose3D:
         # assert np.isclose(self.p3,0.)
-        z = self.z + length*self.p3
-        
         speed = self.speed_XY()
         
+        assert length <= self.length*1.01, f"Length {length} is greater than section length {self.length}"
+        
+        z = self.z + length*self.p3
+        
         if self.type == DubinsMove.STRAIGHT:
-            x = self.x + length*self.p1/speed
-            y = self.y + length*self.p2/speed
+            x = self.x + length*(self.p1/speed)
+            y = self.y + length*(self.p2/speed)
             angle = np.arctan2(self.p2,self.p1)
             return Pose3D(x,y,z,angle)
         else:
@@ -439,8 +442,8 @@ class Path:
         assert np.isclose(self.total_length, sum(s.length for s in self.sections),1e-4)
         self.junctions = self.__compute_junctions(self.sections)
         for i in range(1,len(self.sections)):
-            assert np.all(np.isclose(self.sections[i-1].end().astuple(),self.sections[i].start().astuple(),1e-4))
-    
+            assert poses_dist_2D(self.sections[i-1].end(),self.sections[i].start()) < 1e-2, f"Sections {i-1} and {i} are not connected:\n{self.sections[i-1].end()}\n{self.sections[i].start()}"
+            
     def speed_at_time(self,time:float) -> float:
         return self.speed_profile.get_speed_at_time(time)
     
@@ -451,7 +454,7 @@ class Path:
         return self.speed_profile.get_time_at_length(length)
     
     def duration(self) -> float:
-            return self.time_at_length(self.total_length)
+        return self.time_at_length(self.total_length)
     
     def max_turn_radius(self) -> float:
         output = 0.
@@ -490,14 +493,16 @@ class Path:
         if length > self.total_length:
             return Pose3D.undefined()
         
+        remaining_length = length
+        
         while section_id < len(self.junctions) and length > self.junctions[section_id]:
-            length -= self.sections[section_id].length
+            remaining_length -= self.sections[section_id].length
             section_id += 1
         
         if (section_id >= len(self.junctions)):
-            return self.sections[-1].pose_at_length(length)
+            return self.sections[-1].pose_at_length(remaining_length)
         else:
-            return self.sections[section_id].pose_at_length(length)
+            return self.sections[section_id].pose_at_length(remaining_length)
     
     def poses_at_lengths(self,lengths:np.ndarray) -> list[Pose3D]:
         # Check ts is sorted
@@ -653,7 +658,7 @@ class FleetPlan:
         if self.trajectories is None:
             self.trajectories = {}
         assert isinstance(self.trajectories,dict)
-    
+  
     @property
     def AC_num(self) -> int:
         return len(self.trajectories)

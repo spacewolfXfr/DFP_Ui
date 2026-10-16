@@ -135,8 +135,8 @@ p2 = Path.from_sections_only([s2])
 
 times = np.linspace(0,10,1000)
 
-poses1 = [t for t in zip(times,p1.poses_at_times(times,stats1))]
-poses2 = [t for t in zip(times,p2.poses_at_times(times,stats2))]
+poses1 = [t for t in zip(times,p1.poses_at_times(times))]
+poses2 = [t for t in zip(times,p2.poses_at_times(times))]
 
 print(len(poses1),len(times),len(poses2))
 

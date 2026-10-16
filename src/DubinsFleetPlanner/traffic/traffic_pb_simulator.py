@@ -36,6 +36,7 @@ from traffic.data.basic.airports import Airports
 from DubinsFleetPlanner.ioUtils import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV,print_FleetPlan_to_JSON,parse_trajectories_from_JSON
 from DubinsFleetPlanner.Dubins import Path,BasicPath,FleetPlan,DubinsMove
 from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist,poses_dist,poses_dist_2D
+from DubinsFleetPlanner.SpeedProfile import SpeedProfile,min_tdist
 
 from pyproj import Transformer
 
@@ -85,7 +86,8 @@ def make_circle_boundary_file(xc:float,yc:float,radius:float,filepath:str|pathli
 
 
 def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path,
-                   separation:float, wind:tuple[float,float],threads:int,
+                   separation:float, tdist:bool,
+                   wind:tuple[float,float],threads:int,
                    obstacle_path:typing.Optional[pathlib.Path],
                    geometric_obstacles_path:typing.Optional[pathlib.Path],
                    start_extensions:list[float] = [],
@@ -104,7 +106,8 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     
     cmd.append('-l')
     
-    cmd.append('--tdist')
+    if tdist:
+        cmd.append('--tdist')
     
     cmd.append('--samples')
     cmd.append('3')
@@ -295,8 +298,8 @@ class ArrivalsSimulator:
                 
 
     def step(self,timedelta:pd.Timedelta,
-             threads:int=0) -> tuple[list[tuple[ACStats,Pose3D]],bool]:
-        output:list[tuple[ACStats,Pose3D]] = []
+             threads:int=0) -> tuple[list[tuple[ACStats,Pose3D,float]],bool]:
+        output:list[tuple[ACStats,Pose3D,float]] = [] # Aircraft stats, current pose, current speed
         
         
         ### Time forward
@@ -323,7 +326,7 @@ class ArrivalsSimulator:
         if self.scheduled is not None:
             self.scheduled = self.scheduled.follow_for(timedelta.total_seconds()/60)
             for s,p in self.scheduled.trajectories.values():
-                output.append((s,p.start))
+                output.append((s,p.start,p.speed_profile.get_speed_at_time(0)))
                 
             # Delete almost ended plan
             if self.scheduled.duration < 1e-3:
@@ -335,12 +338,16 @@ class ArrivalsSimulator:
 
         loss_of_separation = False
         if len(output) > 1:
-            min_dist, index1, index2 = min_XY_dist(list(p for _,p in output))
+            if self.timedistance:
+                min_dist, index1, index2 = min_tdist(self.separation, list((p, v) for _, p, v in output))
+                loss_of_separation = min_dist < 0
+            else:
+                min_dist, index1, index2 = min_XY_dist(list(p for _,p,_ in output))
+                loss_of_separation = min_dist < self.separation
             ac1 = output[index1][0].id
             ac2 = output[index2][0].id
             
-            if min_dist < self.separation:
-                loss_of_separation = True
+            if loss_of_separation:
                 print(f"LOSS OF SEPARATION: {min_dist:.2f} NM between {ac1} and {ac2}. ",end='')
                 t1 = self.get_task(ac1)
                 t2 = self.get_task(ac2)
@@ -433,6 +440,7 @@ class ArrivalsSimulator:
                     input_file,
                     output_file,
                     self.separation,
+                    self.timedistance,
                     (self.wind_x,self.wind_y),
                     threads,
                     obstacles_file if obstacles_exist else None,
@@ -705,13 +713,13 @@ class ArrivalsSimulator:
         except KeyError:
             pass
         
-    def __update_axes(self, states:list[tuple[ACStats,Pose3D]], new_t:pd.Timestamp, trajs:Optional[FleetPlan]=None) -> Optional[tuple[float,int,int]]:
+    def __update_axes(self, states:list[tuple[ACStats,Pose3D,float]], new_t:pd.Timestamp, trajs:Optional[FleetPlan]=None) -> Optional[tuple[float,int,int]]:
         """
         Update the axes given the input states and time.
 
         Args:
-            states (list[tuple[ACStats,Pose3D]]): _description_
-            new_t (pd.Timestamp): _description_
+            states (list[tuple[ACStats,Pose3D,float]]): A list of tuples containing the aircraft stats, pose, and speed.
+            new_t (pd.Timestamp): The current time.
 
         Returns:
             Optional[tuple[float,int,int]]: If there are at least two states, returns the minimum distance and the IDs of the two aircraft that are closest. Otherwise, returns None.
@@ -719,7 +727,7 @@ class ArrivalsSimulator:
         if self.__axes is None:
             return
         
-        for s,p in states:
+        for s,p,_ in states:
             id = s.id
             
             task = self.tasklist[self.__task_index[id]]
@@ -791,12 +799,23 @@ class ArrivalsSimulator:
         
         
         if self.__min_dist_line is not None and len(states) >= 2:
-            min_dist, index1, index2 = min_XY_dist(list(p for _,p in states))
-            stat1,p1 = states[index1]
-            stat2,p2 = states[index2]
+            if self.timedistance:
+                min_dist, index1, index2 = min_tdist(self.separation, list((p, v) for _, p, v in states))
+                loss_of_separation = min_dist < 0
+            else:
+                min_dist, index1, index2 = min_XY_dist(list(p for _,p,_ in states))
+                loss_of_separation = min_dist < self.separation
                 
-            label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
-            if min_dist < self.separation:
+            stat1,p1,_ = states[index1]
+            stat2,p2,_ = states[index2]
+            
+            if self.timedistance:
+                label=f"Min slack    ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
+            else:
+                label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
+            
+            
+            if loss_of_separation:
                 label += "\n!!! LOSS OF SEPARATION !!!"
                 
             self.__min_dist_line.set_xdata([p1.x,p2.x])
@@ -885,7 +904,7 @@ def main():
     # parser.add_argument('-w','--wind',dest='wind', nargs=2,
     #                     help='XY Wind, as a pair of values (X,Y). Default to (0,0), i.e. no wind.',
     #                     default=(0,0))
-    parser.add_argument('--tdist',type=bool,action='store_true',help='If set, interpret mdist as time-based separation (in minutes). Default to False.',default=False)
+    parser.add_argument('--tdist',dest='tdist',action='store_true',help='If set, interpret mdist as time-based separation (in minutes). Default to False.',default=False)
     parser.add_argument('--data',help='A Traffic-compatible data file. If not set, use the sample dataset of Traffic',default=None)
     parser.add_argument('--ICAOs',nargs='+',
                         help="List of ICAO codes for airports in which to look for landings in the given dataset. Default to LFPO,LFPG,LFPB",
