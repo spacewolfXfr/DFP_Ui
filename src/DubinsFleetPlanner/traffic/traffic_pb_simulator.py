@@ -35,7 +35,7 @@ from traffic.data.basic.airports import Airports
 
 from DubinsFleetPlanner.ioUtils import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV,print_FleetPlan_to_JSON,parse_trajectories_from_JSON
 from DubinsFleetPlanner.Dubins import Path,BasicPath,FleetPlan,DubinsMove
-from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist,poses_dist,poses_dist_2D
+from DubinsFleetPlanner.Poses import Pose2D,Pose3D,min_XY_dist,poses_XY_dist
 from DubinsFleetPlanner.SpeedProfile import SpeedProfile,min_tdist
 
 from pyproj import Transformer
@@ -113,7 +113,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     cmd.append('3')
     
     cmd.append('--ellipse')
-    cmd.append('0.6')
+    cmd.append('0.5')
     # cmd.append('0.7')
     # cmd.append('0.8')
     
@@ -326,7 +326,7 @@ class ArrivalsSimulator:
         if self.scheduled is not None:
             self.scheduled = self.scheduled.follow_for(timedelta.total_seconds()/60)
             for s,p in self.scheduled.trajectories.values():
-                output.append((s,p.start,p.speed_profile.get_speed_at_time(0)))
+                output.append((s,p.start,p.speed_at_time(0)))
                 
             # Delete almost ended plan
             if self.scheduled.duration < 1e-3:
@@ -548,7 +548,7 @@ class ArrivalsSimulator:
                     end_pose = copy.copy(start_pose)
                     end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
                     end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-                    path = Path.straight_path(start_pose,end_pose)
+                    path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
                     
                     future_paths[id] = (t.stats,path,(t.start_time-new_t).total_seconds()/60)
                 else: # Otherise, break (since tasks are sorted by increasing start time)
@@ -575,7 +575,7 @@ class ArrivalsSimulator:
             end_pose = copy.copy(start_pose)
             end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
             end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-            path = Path.straight_path(start_pose,end_pose)
+            path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
             
             new_paths[id] = (t.stats,path)
         return unplanned_task,new_paths,future_paths
@@ -796,8 +796,6 @@ class ArrivalsSimulator:
             text.set_text(f"  {id}: T -{(t.end_time-new_t).total_seconds()/60:.1f} min")
                 
         
-        
-        
         if self.__min_dist_line is not None and len(states) >= 2:
             if self.timedistance:
                 min_dist, index1, index2 = min_tdist(self.separation, list((p, v) for _, p, v in states))
@@ -806,11 +804,13 @@ class ArrivalsSimulator:
                 min_dist, index1, index2 = min_XY_dist(list(p for _,p,_ in states))
                 loss_of_separation = min_dist < self.separation
                 
-            stat1,p1,_ = states[index1]
-            stat2,p2,_ = states[index2]
+            stat1,p1,v1 = states[index1]
+            stat2,p2,v2 = states[index2]
             
             if self.timedistance:
-                label=f"Min slack    ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
+                actual_dist = poses_XY_dist(p1,p2)
+                max_speed = max(v1,v2)
+                label=f"Min slack    ({stat1.id},{stat2.id}) : {min_dist:.2f} NM\nActual dist is {actual_dist:.2f} NM for time {self.separation} min and speed {max_speed:.2f} NM/min ({max_speed*60:.2f} kts)"
             else:
                 label=f"Min distance ({stat1.id},{stat2.id}) : {min_dist:.2f} NM"
             
@@ -844,8 +844,8 @@ class ArrivalsSimulator:
         max_dt = int(np.ceil(np.max(dts)))
         abs_max_dt = max(abs(min_dt),abs(max_dt))
         
-        minrange = -15 if min_dt-1 < -15 else min_dt
-        maxrange = 15 if max_dt+1 > 15 else max_dt
+        minrange = -30 if min_dt-1 < -30 else min_dt
+        maxrange = 30 if max_dt+1 > 30 else max_dt
         edges = [min_dt-1] + list(range(minrange,maxrange,2)) + [max_dt+1]
         
         hist,edges = np.histogram(dts,edges)
@@ -1078,6 +1078,11 @@ def __wrapped_extract_flight_endpoints(args):
     if o is None:
         return None
     else:
+        if o[1] is not None:
+            assert not(pd.isna(o[1].stats.airspeed))
+            assert not(pd.isna(o[1].stats.target_airspeed))
+            assert np.isfinite(o[1].stats.airspeed)
+            assert np.isfinite(o[1].stats.target_airspeed)
         return o[1] if o[1] is not None else None
 
 def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_traffic:Traffic, influence_circle:Optional[InfluenceCircle]) -> list[FlightEndpoints]:
