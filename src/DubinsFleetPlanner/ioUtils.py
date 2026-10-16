@@ -22,6 +22,7 @@ from .Poses import Pose3D,ListOfTimedPoses,TimedPosesLine,DictOfPoseTrajectories
 from .Aircraft import ACStats,ACOptions
 from .Dubins import Path,BasicPath,FleetPlan,DubinsMove,mod2pi,central_angle
 from .Formation import Formation
+from .SpeedProfile import SpeedProfile
 
 
 ######################################## Dubins problem writing and parsing ########################################
@@ -239,11 +240,14 @@ def parse_trajectory_from_dict(d:dict, straights_compression:bool=False) -> tupl
     if straights_compression:
         sections = straight_sections_compression(sections)
 
+    speed_profile = SpeedProfile(**path_dict.get("speed_profile", {}))
+
     path = Path(
         path_dict["total_length"],
         Pose3D(**path_dict["start"]),
         Pose3D(**path_dict["end"]),
-        sections
+        sections,
+        speed_profile=speed_profile
     )
     
     return stats,path

@@ -29,8 +29,8 @@ def done(ax:Axes):
     
 def min_path_dist(p:BasicPath,pbis:BasicPath):
     def opt_fun(v):
-        l1 = p.pose_at(v[0])
-        l2 = pbis.pose_at(v[1])
+        l1 = p.pose_at_length(v[0])
+        l2 = pbis.pose_at_length(v[1])
         return poses_XY_dist(l1,l2)
     return direct(opt_fun,[(0,p.length),(0,pbis.length)])
 

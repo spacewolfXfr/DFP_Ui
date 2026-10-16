@@ -24,7 +24,7 @@ def insert_delayed_poses(poses:ListOfTimedPoses,stat:ACStats,path:Path,delay:flo
         if t < delay:
             d[stat.id] = Pose3D.undefined()
         else:
-            pose = path.pose_at((t-delay)*stat.airspeed)
+            pose = path.pose_at_length((t-delay)*stat.airspeed)
             d[stat.id] = pose
     
     return poses

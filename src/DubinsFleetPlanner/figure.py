@@ -198,7 +198,7 @@ def plot_straights(stats:ACStats, start:Pose2D, end:Pose2D, target_length:float)
             points = []
             
             for i,s in enumerate(samples):
-                points.append(path.pose_at(samples[i]))
+                points.append(path.pose_at_length(samples[i]))
             
             
             plot_pose2d_sequence(axe,points,False,True,label=f"S-{name}",
@@ -213,7 +213,7 @@ def plot_straights(stats:ACStats, start:Pose2D, end:Pose2D, target_length:float)
             points = []
             
             for i,s in enumerate(samples):
-                points.append(path.pose_at(samples[i]))
+                points.append(path.pose_at_length(samples[i]))
             
             
             plot_pose2d_sequence(axe,points,False,True,label=f"{name}-S",
@@ -228,7 +228,7 @@ def plot_straights(stats:ACStats, start:Pose2D, end:Pose2D, target_length:float)
             points = []
             
             for i,s in enumerate(samples):
-                points.append(path.pose_at(samples[i]))
+                points.append(path.pose_at_length(samples[i]))
             
             
             plot_pose2d_sequence(axe,points,False,True,label=f"S-{name}-S",
@@ -361,8 +361,8 @@ def plot_separation_sections(p1:Path, p2:Path, stats1:ACStats, stats2:ACStats, a
     dur2 = p2.total_length/stats2.airspeed
     dur = min(dur1,dur2)
     times = np.linspace(0,dur,100)
-    pts1 = p1.poses_at(stats1.airspeed*times)
-    pts2 = p2.poses_at(stats2.airspeed*times)
+    pts1 = p1.poses_at_lengths(stats1.airspeed*times)
+    pts2 = p2.poses_at_lengths(stats2.airspeed*times)
     _, l1s, _, _ = plot_pose2d_sequence(axe,pts1,False,True,color='k',linestyle='solid',label='Path 1')
     _, l2s, _, _ = plot_pose2d_sequence(axe,pts2,False,True,color='k',linestyle='dashed',label='Path 2')
     
@@ -381,8 +381,8 @@ def plot_separation_sections(p1:Path, p2:Path, stats1:ACStats, stats2:ACStats, a
             continue
         times = np.linspace(sections_durations[i-1],min(sections_durations[i],dur),200)
         
-        pts1 = p1.poses_at(stats1.airspeed*times)
-        pts2 = p2.poses_at(stats2.airspeed*times)
+        pts1 = p1.poses_at_lengths(stats1.airspeed*times)
+        pts2 = p2.poses_at_lengths(stats2.airspeed*times)
         
         s1 = p1.section_at(stats1.airspeed*(sections_durations[i-1]+sections_durations[i])/2)
         s2 = p2.section_at(stats2.airspeed*(sections_durations[i-1]+sections_durations[i])/2)
@@ -492,10 +492,10 @@ def plot_pathplanning(stats:list[ACStats], starts:list[Pose2D], ends:list[Pose2D
                 points = []
                 
                 for i,s in enumerate(samples):
-                    points.append(path.pose_at(samples[i]))
+                    points.append(path.pose_at_length(samples[i]))
                 
                 
-                _,lines = plot_pose2d_sequence(axe,points,False,True,label=name,
+                _,lines,_,__cached__ = plot_pose2d_sequence(axe,points,False,True,label=name,
                     color=c, 
                     marker=markerstyle,markersize=marksersize,markevery=0.2,
                     linestyle=linestyle)
@@ -541,8 +541,8 @@ def plot_pathplanning(stats:list[ACStats], starts:list[Pose2D], ends:list[Pose2D
                     
                     times = np.linspace(0,dur,200)
                     
-                    pts1 = p1.poses_at(stats[i].airspeed*times)
-                    pts2 = p2.poses_at(stats[j].airspeed*times)
+                    pts1 = p1.poses_at_lengths(stats[i].airspeed*times)
+                    pts2 = p2.poses_at_lengths(stats[j].airspeed*times)
                     
                     min_dist = np.inf
                     min_dist_loc = 0
@@ -652,7 +652,7 @@ if __name__ == '__main__':
         interp = unit_interpolate_basicpath(s,0.5)
         
         for l in samples:
-            ref_poses.append(s.pose_at(l))
+            ref_poses.append(s.pose_at_length(l))
             interp_poses.append(interp(l))
             
     fig,ax = plt.subplots()

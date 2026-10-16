@@ -479,7 +479,7 @@ class ArrivalsSimulator:
                         # assert abs(p_lon-self.tasklist[i].end.longitude) < 1e-3, f"Longitudes do not match for {s.id}: {p_lon} vs {self.tasklist[i].end.longitude}"
                         
                     if self.__axes is not None:
-                        poses = [p.pose_at(t) for t in np.linspace(0,p.total_length,50,endpoint=True)]
+                        poses = [p.pose_at_length(t) for t in np.linspace(0,p.total_length,50,endpoint=True)]
                             
                                 
                         c = self.__color_dict[s.id]
@@ -734,7 +734,7 @@ class ArrivalsSimulator:
             if trajs is not None:
                 try:
                     _,path = trajs.get_path(s.id)
-                    poses = [path.pose_at(t) for t in np.linspace(0,path.total_length,50,endpoint=True)]
+                    poses = [path.pose_at_length(t) for t in np.linspace(0,path.total_length,50,endpoint=True)]
                     c = self.__color_dict[s.id]
                     _,l,_,_ = plot_pose2d_sequence(self.__axes,poses,False,False,alpha=0.2,color=c,linestyle=':')
                     self.__traj_dict[s.id] = l[0]

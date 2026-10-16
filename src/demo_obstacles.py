@@ -25,8 +25,8 @@ def done(ax:Axes):
     
 def min_path_dist(p:BasicPath,pbis:BasicPath):
     def opt_fun(v):
-        l1 = p.pose_at(v[0])
-        l2 = pbis.pose_at(v[1])
+        l1 = p.pose_at_length(v[0])
+        l2 = pbis.pose_at_length(v[1])
         return poses_XY_dist(l1,l2)
     return direct(opt_fun,[(0,p.length),(0,pbis.length)])
 
@@ -96,8 +96,8 @@ for p in path.sections:
         if first:
             _c.set_label('Circle center')
             
-        tpts = [(t,p.pose_at(t)) for t in np.linspace(0,p.length,100)]
-        low_res_tpts = [(t,p.pose_at(t)) for t in np.linspace(0,p.length,5)]
+        tpts = [(t,p.pose_at_length(t)) for t in np.linspace(0,p.length,100)]
+        low_res_tpts = [(t,p.pose_at_length(t)) for t in np.linspace(0,p.length,5)]
         
         wind_pts = [Pose2D(pt.x+windx*(travelled+t),pt.y+windy*(travelled+t),pt.theta) for t,pt in tpts]
         

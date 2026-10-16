@@ -25,7 +25,7 @@ def unit_interpolate_basicpath(p:BasicPath,stepping:float=1.) -> BSpline:
         sample_num = int(np.ceil(p.length/stepping))
         lengths = np.linspace(0,p.length,sample_num,endpoint=True)
         
-        poses = [p.pose_at(t) for t in lengths]
+        poses = [p.pose_at_length(t) for t in lengths]
         ys = [[e.x,e.y] for e in poses]
         
         return make_interp_spline(lengths,ys,k=5,bc_type=(
@@ -53,7 +53,7 @@ def interpolate_path(stats:ACStats,p:Path,cicle_step:float=1,junctions_offset:fl
             samples = np.linspace(junctions_offset, s.length-junctions_offset, n_samples,endpoint=True)
             for t in samples:
                 sample_times.append(curr_time+t)
-                sample_poses.append(s.pose_at(t))
+                sample_poses.append(s.pose_at_length(t))
         
         if i == len(p.sections)-1:
             sample_times.append(curr_time+s.length)

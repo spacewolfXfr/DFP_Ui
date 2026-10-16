@@ -24,12 +24,12 @@ def plan_LSL(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
     
     first = BasicPath.from_2D(DubinsMove.LEFT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -53,12 +53,12 @@ def plan_RSR(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
     
     first = BasicPath.from_2D(DubinsMove.RIGHT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -82,12 +82,12 @@ def plan_LSR(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.LEFT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -111,12 +111,12 @@ def plan_RSL(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.RIGHT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -140,12 +140,12 @@ def plan_RLR(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.RIGHT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.LEFT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -169,12 +169,12 @@ def plan_LRL(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.LEFT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.RIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -198,12 +198,12 @@ def plan_SRS(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.STRAIGHT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.RIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.STRAIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -227,12 +227,12 @@ def plan_SLS(stats:ACStats,start:Pose2D,end:Pose2D) -> typing.Optional[Path]:
 
     first = BasicPath.from_2D(DubinsMove.STRAIGHT,t*r,start,r)
     
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.LEFT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.STRAIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     if np.hypot(end.x - third_end.x,end.y - third_end.y) > 1e-9:
         return None
@@ -433,7 +433,7 @@ def plan_LSL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -441,20 +441,20 @@ def plan_LSL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -493,7 +493,7 @@ def plan_RSR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -501,20 +501,20 @@ def plan_RSR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -551,7 +551,7 @@ def plan_LSR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -559,20 +559,20 @@ def plan_LSR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -609,7 +609,7 @@ def plan_RSL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -617,20 +617,20 @@ def plan_RSL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.STRAIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -667,7 +667,7 @@ def plan_RLR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -675,20 +675,20 @@ def plan_RLR_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.LEFT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.RIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -725,7 +725,7 @@ def plan_LRL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -733,20 +733,20 @@ def plan_LRL_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.RIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.LEFT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -783,7 +783,7 @@ def plan_SRS_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -791,20 +791,20 @@ def plan_SRS_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.RIGHT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.STRAIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 
@@ -841,7 +841,7 @@ def plan_SLS_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     sections: list[BasicPath] = []
     if ratio > 0:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*ratio,start,r))
-        restart = sections[0].pose_at(l*r*ratio).to2D()
+        restart = sections[0].pose_at_length(l*r*ratio).to2D()
     else:
         restart = start
 
@@ -849,20 +849,20 @@ def plan_SLS_from_straights(stats:ACStats,start:Pose2D,end:Pose2D, target:float,
     
     sections.append(first)
 
-    first_end = first.pose_at(t*r)
+    first_end = first.pose_at_length(t*r)
     second = BasicPath.from_2D(DubinsMove.LEFT, u*r, Pose2D(first_end.x,first_end.y,first_end.theta),r)
     
     sections.append(second)
 
-    second_end = second.pose_at(u*r)
+    second_end = second.pose_at_length(u*r)
     third = BasicPath.from_2D(DubinsMove.STRAIGHT, v*r, Pose2D(second_end.x,second_end.y,second_end.theta),r)
-    third_end = third.pose_at(v*r)
+    third_end = third.pose_at_length(v*r)
 
     sections.append(third)
 
     if ratio < 1:
         sections.append(BasicPath.from_2D(DubinsMove.STRAIGHT,l*r*(1-ratio),Pose2D(third_end.x,third_end.y,third_end.theta),r))
-        true_end = sections[-1].pose_at(l*r*(1-ratio))
+        true_end = sections[-1].pose_at_length(l*r*(1-ratio))
     else:
         true_end = third_end
 

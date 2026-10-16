@@ -26,6 +26,7 @@ import numpy as np
 
 from .Poses import Pose2D,Pose3D,ListOfTimedPoses,poses_euclidean_dist
 from .Aircraft import ACStats
+from .SpeedProfile import SpeedProfile
 
 #################### Base elements ####################
 
@@ -354,6 +355,14 @@ class BasicPath:
             return np.hypot(self.p1,self.p2)
         else:
             return self.p1*np.abs(self.p2)
+        
+    def set_XY_speed(self,speed:float):
+        if self.type == DubinsMove.STRAIGHT:
+            norm = np.hypot(self.p1,self.p2)
+            self.p1 = speed*self.p1/norm
+            self.p2 = speed*self.p2/norm
+        else:
+            self.p2 = np.sign(self.p2)*speed/self.p1
 
     def radius(self) -> float:
         if self.type == DubinsMove.STRAIGHT:
@@ -361,7 +370,7 @@ class BasicPath:
         else:
             return self.p1
         
-    def pose_at(self,length:float) -> Pose3D:
+    def pose_at_length(self,length:float) -> Pose3D:
         # assert np.isclose(self.p3,0.)
         z = self.z + length*self.p3
         
@@ -382,10 +391,10 @@ class BasicPath:
             return Pose3D(xy_pos[0],xy_pos[1],z,angle)
         
     def start(self) -> Pose3D:
-        return self.pose_at(0)
+        return self.pose_at_length(0)
     
     def end(self) -> Pose3D:
-        return self.pose_at(self.length)
+        return self.pose_at_length(self.length)
     
     ##### Export #####
     
@@ -395,8 +404,6 @@ class BasicPath:
         output["m"] = self.type.value
         return output
     
-    
-    
 @dataclass
 class Path:
     total_length:float  # Total length of the path
@@ -404,6 +411,7 @@ class Path:
     end         :Pose3D # Ending pose
     sections    :list[BasicPath]    # List of base primitives describing the shape
     junctions   :list[float] = field(init=False) # List of lengths at which there is a section change
+    speed_profile:SpeedProfile = field(default_factory=SpeedProfile) # Speed profile along the path
     
     @staticmethod
     def from_sections_only(sections:list[BasicPath]) -> Path:
@@ -430,6 +438,20 @@ class Path:
     def __post_init__(self):
         assert np.isclose(self.total_length, sum(s.length for s in self.sections),1e-4)
         self.junctions = self.__compute_junctions(self.sections)
+        for i in range(1,len(self.sections)):
+            assert np.all(np.isclose(self.sections[i-1].end().astuple(),self.sections[i].start().astuple(),1e-4))
+    
+    def speed_at_time(self,time:float) -> float:
+        return self.speed_profile.get_speed_at_time(time)
+    
+    def length_at_time(self,time:float) -> float:
+        return self.speed_profile.get_length_at_time(time)
+    
+    def time_at_length(self,length:float) -> float:
+        return self.speed_profile.get_time_at_length(length)
+    
+    def duration(self) -> float:
+            return self.time_at_length(self.total_length)
     
     def max_turn_radius(self) -> float:
         output = 0.
@@ -451,21 +473,19 @@ class Path:
             s.y += dy
             s.z += dz
     
-    def pose_at_time(self,time:float,stats:ACStats) -> Pose3D:
-        duration = 2*self.total_length/(stats.airspeed+stats.target_airspeed)
-        length_traveled = time*stats.airspeed + 0.5*(stats.target_airspeed-stats.airspeed)*time**2/duration
-        return self.pose_at(length_traveled)
+    def pose_at_time(self,time:float) -> Pose3D:
+        return self.pose_at_length(self.speed_profile.get_length_at_time(time))
 
-    def poses_at_times(self,times:np.ndarray,stats:ACStats) -> list[Pose3D]:
+    def poses_at_times(self,times:np.ndarray) -> list[Pose3D]:
         # Check ts is sorted
         assert np.all(times[:-1] <= times[1:])
         
-        duration = 2*self.total_length/(stats.airspeed+stats.target_airspeed)
-        lengths_traveled = times*stats.airspeed + 0.5*(stats.target_airspeed-stats.airspeed)*np.square(times)/duration
+        lengths_traveled = np.fromiter((self.speed_profile.get_length_at_time(t) for t in times),
+                                       float,len(times))
         
-        return self.poses_at(lengths_traveled)
+        return self.poses_at_lengths(lengths_traveled)
 
-    def pose_at(self,length:float) -> Pose3D:
+    def pose_at_length(self,length:float) -> Pose3D:
         section_id = 0
         if length > self.total_length:
             return Pose3D.undefined()
@@ -475,11 +495,11 @@ class Path:
             section_id += 1
         
         if (section_id >= len(self.junctions)):
-            return self.sections[-1].pose_at(length)
+            return self.sections[-1].pose_at_length(length)
         else:
-            return self.sections[section_id].pose_at(length)
+            return self.sections[section_id].pose_at_length(length)
     
-    def poses_at(self,lengths:np.ndarray) -> list[Pose3D]:
+    def poses_at_lengths(self,lengths:np.ndarray) -> list[Pose3D]:
         # Check ts is sorted
         assert np.all(lengths[:-1] <= lengths[1:])
         
@@ -496,15 +516,15 @@ class Path:
                 section_id += 1
             
             if (section_id >= len(self.junctions)):
-                output.append(self.sections[-1].pose_at(time-prev_sections_time))
+                output.append(self.sections[-1].pose_at_length(time-prev_sections_time))
             else:
-                output.append(self.sections[section_id].pose_at(time-prev_sections_time))
+                output.append(self.sections[section_id].pose_at_length(time-prev_sections_time))
                 
         return output
     
     def sample(self,num:int) -> list[Pose3D]:
         assert num > 0
-        return self.poses_at(np.linspace(0,self.total_length,num))
+        return self.poses_at_lengths(np.linspace(0,self.total_length,num))
     
     def section_at(self,length:float) -> typing.Optional[BasicPath]:
         section_id = 0
@@ -568,7 +588,7 @@ class Path:
         else:
             new_sections = self.sections[section_id:]
             
-        new_start   = new_sections[0].pose_at(remaining_length)
+        new_start   = new_sections[0].pose_at_length(remaining_length)
         
         new_start_section = BasicPath.from_3D(
             new_sections[0].type,
@@ -671,7 +691,7 @@ class FleetPlan:
         wind_dy = self.wind_y*t
         
         for s,traj in self.trajectories.values():
-            p = traj.pose_at_time(t,s)
+            p = traj.pose_at_time(t)
             p.x += wind_dx
             p.y += wind_dy
             output[s.id] = p
