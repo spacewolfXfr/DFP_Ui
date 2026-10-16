@@ -349,6 +349,11 @@ class BasicPath:
         return BasicPath(t,length,x,y,z,p1,p2,p3,p4)
     
     ##### Getters #####
+    def speed_XY(self) -> float:
+        if self.type == DubinsMove.STRAIGHT:
+            return np.hypot(self.p1,self.p2)
+        else:
+            return self.p1*np.abs(self.p2)
 
     def radius(self) -> float:
         if self.type == DubinsMove.STRAIGHT:
@@ -360,14 +365,16 @@ class BasicPath:
         # assert np.isclose(self.p3,0.)
         z = self.z + length*self.p3
         
+        speed = self.speed_XY()
+        
         if self.type == DubinsMove.STRAIGHT:
-            x = self.x + length*self.p1
-            y = self.y + length*self.p2
+            x = self.x + length*self.p1/speed
+            y = self.y + length*self.p2/speed
             angle = np.arctan2(self.p2,self.p1)
             return Pose3D(x,y,z,angle)
         else:
             center = np.array([self.x,self.y])
-            a = self.p4 + length*self.p2
+            a = self.p4 + np.sign(self.p2)*length/self.p1
             
             xy_pos = center + self.p1*np.array([np.cos(a),np.sin(a)])
             
@@ -443,22 +450,35 @@ class Path:
             s.x += dx
             s.y += dy
             s.z += dz
+    
+    def pose_at_time(self,time:float,stats:ACStats) -> Pose3D:
+        duration = 2*self.total_length/(stats.airspeed+stats.target_airspeed)
+        length_traveled = time*stats.airspeed + 0.5*(stats.target_airspeed-stats.airspeed)*time**2/duration
+        return self.pose_at(length_traveled)
+
+    def poses_at_times(self,times:np.ndarray,stats:ACStats) -> list[Pose3D]:
+        # Check ts is sorted
+        assert np.all(times[:-1] <= times[1:])
         
+        duration = 2*self.total_length/(stats.airspeed+stats.target_airspeed)
+        lengths_traveled = times*stats.airspeed + 0.5*(stats.target_airspeed-stats.airspeed)*np.square(times)/duration
+        
+        return self.poses_at(lengths_traveled)
+
     def pose_at(self,length:float) -> Pose3D:
         section_id = 0
-        time = length
-        if time > self.total_length:
+        if length > self.total_length:
             return Pose3D.undefined()
         
         while section_id < len(self.junctions) and length > self.junctions[section_id]:
-            time -= self.sections[section_id].length
+            length -= self.sections[section_id].length
             section_id += 1
         
         if (section_id >= len(self.junctions)):
-            return self.sections[-1].pose_at(time)
+            return self.sections[-1].pose_at(length)
         else:
-            return self.sections[section_id].pose_at(time)
-        
+            return self.sections[section_id].pose_at(length)
+    
     def poses_at(self,lengths:np.ndarray) -> list[Pose3D]:
         # Check ts is sorted
         assert np.all(lengths[:-1] <= lengths[1:])
@@ -651,7 +671,7 @@ class FleetPlan:
         wind_dy = self.wind_y*t
         
         for s,traj in self.trajectories.values():
-            p = traj.pose_at(s.airspeed*t)
+            p = traj.pose_at_time(t,s)
             p.x += wind_dx
             p.y += wind_dy
             output[s.id] = p
