@@ -9,7 +9,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
 from DubinsFleetPlanner.Poses import poses_XY_dist
-from DubinsFleetPlanner.Dubins import BasicPath,DubinsMove,ACStats,Path
+from DubinsFleetPlanner.Dubins import BasicPath,DubinsMove,ACStats,Path,Pose3D,SRS,poses_euclidean_dist
 from DubinsFleetPlanner.UI.plotting import plot_BasicPath_obstacle,plot_several_pose2d_sequences,plot_pose2d_sequence
 from DubinsFleetPlanner.UI._plotting_extra import my_cmap
 from DubinsFleetPlanner.figure import plot_separation_sections
@@ -54,33 +54,112 @@ def min_straight_lstsq(p:BasicPath,pbis:BasicPath):
 
 fig,ax = plt.subplots()
 
+# start = Pose3D(-1.6229542339982297,
+#                 -1.0563755753005593,
+#                 0,
+#                 -2.4675849223753814).to2D()
+
+# end = Pose3D(-4.175511861897613,
+#                 -2.0659710592402876,
+#                 0,
+#                 0.37720150203297687).to2D()
+
+# path_params = SRS(start,end)
+
+# if path_params is None:
+#     print("No path found")
+#     exit(1)
+
+# s1 = BasicPath.from_2D(STRAIGHT,path_params[0],start,1.)
+# s2 = BasicPath.from_2D(RIGHT,path_params[1],s1.end().to2D(),1.)
+# s3 = BasicPath.from_2D(STRAIGHT,path_params[2],s2.end().to2D(),1.)
+
+# print("Lengths: ", path_params)
+# print("Measured lengths: ", s1.length, s2.length, s3.length)
+# print("Junctions: ", s1.end().to2D(), s2.end().to2D())
+# print("Endpoints: ", start,end)
+
+# p = Path.from_sections_only([s1,s2,s3])
+
+# plot_pose2d_sequence(ax,p.sample(200), color='b',label='Path')
+
+# done(ax)
+
+
 s1 = BasicPath(**{
-    'x':381.84549785164512,
-    'y':3081.1155665326842,
-    'z':0,
-    'p1':-3.3332870018685861,
-    'p2':-0.017574819630541628,
-    'p3':0,
-    'p4':0,
-    'type':STRAIGHT,
-    'length':3.1765989416110858,
+    'x':-2.369244240568174,
+    'y':4.1730026404643965,
+    'z':-0.6208162757504212,
+    'p1':0.76730173826951442,
+    'p2':0.87937680126526996,
+    'p3':0.21097824506661703,
+    'p4':-2.707146700567955,
+    'type':LEFT,
+    'length':100000000000000000
 })
 
 s2 = BasicPath(**{
-    'x':471.26012298871711,
-    'y':3068.5155471287085,
-    'z':0,
-    'p1':1.0610329539459691,
-    'p2':-3.1415926535897927,
-    'p3':0,
-    'p4':1.4283501130324778,
+    'x':-1.0538663585239547,
+    'y':-1.2404960439600199,
+    'z':1.568775591030982,
+    'p1':3.1509526094997478,
+    'p2':-0.95593980475171336,
+    'p3':0.06646736759992547,
+    'p4':-2.4899237240570358,
     'type':RIGHT,
-    'length':3.9219964720370584,
+    'length':100000000000000000,
 })
 
+stats1 = ACStats(**{
+    "id":0x2,
+    "airspeed":2.7044482018375078,
+    "target_airspeed":2.7044482018375078,
+    "turn_radius":2.4706326759123103,
+    "climb":0.36415213914655742,
+    "min_acceleration":-1,
+    "max_acceleration":1,
+})
 
-plot_BasicPath_obstacle(ax,s1)
-plot_BasicPath_obstacle(ax,s2)
+stats2 = ACStats(**{
+    "id":0x3,
+    "airspeed":4.0066723050612847,
+    "target_airspeed":4.0066723050612847,
+    "turn_radius":3.4559490159639417,
+    "climb":0.046228208719836038,
+    "min_acceleration":-1,
+    "max_acceleration":1,
+})
+
+p1 = Path.from_sections_only([s1])
+p2 = Path.from_sections_only([s2])
+
+times = np.linspace(0,10,1000)
+
+poses1 = [t for t in zip(times,p1.poses_at_times(times,stats1))]
+poses2 = [t for t in zip(times,p2.poses_at_times(times,stats2))]
+
+print(len(poses1),len(times),len(poses2))
+
+poses_dict:dict[int,list[tuple[float,Pose3D]]] = {
+    0x2: poses1,
+    0x3: poses2
+}
+
+
+dists = [poses_XY_dist(p1[1],p2[1]) for p1,p2 in zip(poses1,poses2)]
+dtimes = times[:len(dists)]
+
+mId = np.argmin(dists)
+mTime = dtimes[mId]
+mDist = dists[mId]
+
+
+print(f"Minimum distance: {mDist} at time: {mTime}")
+print(f"Trajectories durations: {times[len(poses1)-1]}, {times[len(poses2)-1]}")
+
+plot_several_pose2d_sequences(ax,poses_dict,endpoints=True,label=True)
+
+done(ax)
 
 # path1 = Path.from_sections_only([s1])
 # path2 = Path.from_sections_only([s2])
