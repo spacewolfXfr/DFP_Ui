@@ -57,7 +57,7 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
             expected_speed/(60*np.pi) # Full circle in 2 minutes
         )
         
-        r = extract_flight_endpoints(flight,airports,stats,threshold_shift)
+        r = extract_flight_endpoints(flight,airports,stats,threshold_shift=threshold_shift)
         
         if r is None:
             flight.plot(ax,color=leaving_color,alpha=0.3)

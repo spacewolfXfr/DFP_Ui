@@ -158,6 +158,7 @@ class FlightEndpoints:
     end_time:pd.Timestamp
     initial_end_time:pd.Timestamp
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
+    departing:bool  # If true, the aircraft is leaving. Otherwise, it is landing
     start_airport:Optional[Airport] = None
     start_runway:Optional[str]      = None
     dest_airport:Optional[Airport]  = None
@@ -196,6 +197,7 @@ class FlightEndpoints:
             self.end_time,
             self.initial_end_time,
             self.stats,
+            self.departing,
             self.start_airport,
             self.start_runway,
             self.dest_airport,
@@ -247,6 +249,7 @@ class FlightEndpoints:
 
 def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[str]|Airports,
                              stats:ACStats,circle:Optional[InfluenceCircle]=None,
+                             constant_speed:bool=False,
                              threshold_shift:float=20) -> Optional[tuple[FlightEndpoints,Optional[FlightEndpoints]]]:
     """ Given a flight, a list of airports where it could have started or landed (ICAO codes) and a threshold shift, returns:
     - None if neither takeoff nor landing airport could be confirmed among the candidates ones
@@ -292,6 +295,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     ## Check for landing point in the arriving case
     runway  = None
     rw_proj = None
+    departing = False
     
     if dest_airport is not None and dest_airport.icao in candidate_airports.data.icao.values:
         fix_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
@@ -316,12 +320,22 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     
     ## Check for takeoff point in the departing case, as well as the influence circle limit if provided
     first_dpt = None
+    dpt_proj = None
     start_runway = None
     if start_airport is not None and start_airport.icao in candidate_airports.data.icao.values:
+        departing = True
         first_dpt = get_second_airbone_dpt(flight)
+        if first_dpt is not None:
+            dpt_proj = destination(first_dpt.latitude, first_dpt.longitude, first_dpt.track, threshold_shift * NM_TO_METERS)
         takeoff = flight.takeoff(start_airport,method="track_based").next()
         if takeoff is not None:
             start_runway = takeoff.runway_max
+            if dpt_proj is None:
+                dpt_proj = destination(takeoff.latitude, takeoff.longitude, takeoff.track, threshold_shift * NM_TO_METERS)
+        
+        # By default, destination returns the bearing back to the original point. We need to correct it to keep the same direction
+        if dpt_proj is not None:
+            dpt_proj = dpt_proj[0], dpt_proj[1], dpt_proj[2]+180
         
         if circle is not None:
             # Find the first point outside the influence circle
@@ -353,7 +367,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         flight_datapoint_to_pose(last_dpt),
         last_dpt["timestamp"],
         last_dpt["timestamp"],
-        stats,
+        stats, departing,
         start_airport,start_runway,
         dest_airport,dest_runway,
     )
@@ -363,29 +377,37 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     if fix_dpt is not None:
         # It is a landing flight, and the runway has been confirmed
         if rw_proj is not None:
-            if not pd.isna(fix_dpt["groundspeed"]):
+            departing = False
+            if constant_speed:
+                stats.airspeed = stats.target_airspeed
+            elif not pd.isna(fix_dpt["groundspeed"]):
                 stats.airspeed = fix_dpt["groundspeed"]/60 # Convert from NM/h to NM/min
+                
             end_to_ils = FlightEndpoints(
                 flight_datapoint_to_pose(first_dpt),
                 first_dpt["timestamp"],
                 LatlonPose(rw_proj[0],rw_proj[1],fix_dpt["altitude"],rw_proj[2]),
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
-                stats,
+                stats, departing,
                 start_airport,start_runway,
                 dest_airport,fix_dpt["ILS"])
         else: # It is a departing flight
-            obj_speed = stats.airspeed
-            stats.airspeed = first_dpt["groundspeed"]/60 if not pd.isna(fix_dpt["groundspeed"]) else stats.target_airspeed
-            stats.target_airspeed = obj_speed
+            assert departing is True
+            if constant_speed:
+                stats.target_airspeed = stats.airspeed
+            else:
+                obj_speed = stats.airspeed
+                stats.airspeed = first_dpt["groundspeed"]/60 if not pd.isna(first_dpt["groundspeed"]) else stats.target_airspeed
+                stats.target_airspeed = obj_speed
             end_to_ils = FlightEndpoints(
-                flight_datapoint_to_pose(first_dpt),
+                flight_datapoint_to_pose(first_dpt) if dpt_proj is None else LatlonPose(dpt_proj[0],dpt_proj[1],fix_dpt["altitude"],dpt_proj[2]),
                 first_dpt["timestamp"],
                 flight_datapoint_to_pose(fix_dpt),
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
-                stats,
+                stats, departing,
                 start_airport,start_runway,
                 dest_airport,None)
-        
+    
     return (end_to_end,end_to_ils)

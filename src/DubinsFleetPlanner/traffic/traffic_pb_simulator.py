@@ -109,11 +109,11 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     if tdist:
         cmd.append('--tdist')
     
-    cmd.append('--samples')
-    cmd.append('3')
-    
-    cmd.append('--ellipse')
-    cmd.append('0.5')
+    # cmd.append('--samples')
+    # cmd.append('9')
+    # 
+    # cmd.append('--ellipse')
+    # cmd.append('0.5')
     # cmd.append('0.7')
     # cmd.append('0.8')
     
@@ -124,7 +124,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     
     cmd.append('--straights-only')
     cmd.append('--allow-shortest')
-    # cmd.append('--fixed-radius')
+    cmd.append('--fixed-radius')
     
     if obstacle_path is not None:
         cmd.append('-O')
@@ -145,7 +145,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
             cmd.append(str(e))
     
     print("\n  Sending new problem to solver")
-    # print(cmd)
+    print(cmd)
     output = subprocess.run(cmd)
     # print(output)
     # output.check_returncode()
@@ -181,7 +181,7 @@ class ArrivalsSimulator:
     scheduled:typing.Optional[FleetPlan] = None
     schedule_counters:dict[int,int]   = dataclasses.field(init=False) # Dict from AC id to number of reschedulings
     nopath_counter:dict[int,int] = dataclasses.field(init=False) # Dict from AC id to number of times no path was found
-    line_buffersize:int = 20 # Number of past points kept in visualisation
+    line_buffersize:int = 10 # Number of past points kept in visualisation
     __schedules_count:int = 0 # Number of calls to the solver
     timedistance:bool = False # If True, interpret separation as time-based separation (in minutes, to be multiplied by the speed of the aircraft). If False, interpret separation as distance-based separation (in NM).
     
@@ -251,10 +251,14 @@ class ArrivalsSimulator:
         t = self.get_task(ac_id)
         return t.planned
     
-    def can_be_scheduled(self,task:FlightEndpoints,path:Path) -> bool:        
+    def can_be_scheduled(self,task:FlightEndpoints,path:Path, backup:bool) -> bool:        
         # If it has a plan, don't schedule by default
         if task.planned:
             add_me = False
+            
+            # By default, do not reschedule already scheduled tasks
+            if not backup:
+                return False
             
             # Check if geometrically possible
             can_be_rescheduled = False
@@ -304,7 +308,7 @@ class ArrivalsSimulator:
         
         ### Time forward
         new_t = timedelta + self.__t
-        # print(new_t.strftime("%Y-%m-%d %H:%M:%S"))
+        print("Time in simulation: ",new_t.strftime("%Y-%m-%d %H:%M:%S"))
         
         ### Metadata
         if self.influence_circle is not None and self.__xy_circle is None:
@@ -367,6 +371,7 @@ class ArrivalsSimulator:
                             del self.scheduled.trajectories[ac1]
                             self.__remove_from_axes(ac1)
                         print(f"Removing {ac1} from the simulation")
+                    # input("Waiting for user to continue...")
                 
                 
         
@@ -378,7 +383,7 @@ class ArrivalsSimulator:
             for s,p in self.scheduled.trajectories.values():
                 t = self.get_task(s.id)
                 
-                if self.can_be_scheduled(t,p):
+                if self.can_be_scheduled(t,p,True):
                     candidate_acs.add(s.id)
         
         # Compute which aircraft can be rescheduled
@@ -387,7 +392,6 @@ class ArrivalsSimulator:
         
         # If some aircraft have to be rescheduled, do it
         success_schedule = True
-        noncandidate_acs = set()
         if len(candidate_acs) > 0:
             success_schedule = self.solve_path_planning(threads, new_t, future_paths, candidate_acs)
                         
@@ -432,6 +436,8 @@ class ArrivalsSimulator:
             pp_problems.append(ppp)
         write_pathplanning_problem_to_CSV(input_file,pp_problems,True)
             
+        print(f"Solving problem including: {candidate_acs}\nObstacle ACs are: {noncandidate_acs}")
+            
         ## Call the solver
         try:
             self.__schedules_count += 1
@@ -453,15 +459,12 @@ class ArrivalsSimulator:
             if solver_output.returncode == 0:
                 solved = parse_trajectories_from_JSON(output_file)
                 self.__last_global_schedule = self.__t
-                newly_scheduled = False
                 for s,p in solved.trajectories.values():
                     if s.id in noncandidate_acs:
                         continue
                     t = self.get_task(s.id)
                     self.__last_schedules[s.id] = self.__t
                     self.schedule_counters[s.id] += 1
-                    if not t.planned:
-                        newly_scheduled = True
                     t.planned = True
                     
                 
@@ -546,11 +549,12 @@ class ArrivalsSimulator:
                     start_pose = t.start.to_pose3D(self.transformer,True)
                     start_pose.z = 0
                     end_pose = copy.copy(start_pose)
-                    end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-                    end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+                    end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*10
+                    end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*10
                     path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
                     
                     future_paths[id] = (t.stats,path,(t.start_time-new_t).total_seconds()/60)
+                    continue
                 else: # Otherise, break (since tasks are sorted by increasing start time)
                     break
             
@@ -573,8 +577,8 @@ class ArrivalsSimulator:
                 start_pose = t.start.to_pose3D(self.transformer,True)
             start_pose.z = 0
             end_pose = copy.copy(start_pose)
-            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
-            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*2
+            end_pose.x += np.cos(start_pose.theta)*t.stats.airspeed*self.cmd_shift*3
+            end_pose.y += np.sin(start_pose.theta)*t.stats.airspeed*self.cmd_shift*3
             path = Path.straight_path(start_pose,end_pose,t.stats.airspeed)
             
             new_paths[id] = (t.stats,path)
@@ -863,7 +867,7 @@ class ArrivalsSimulator:
         axes[0].set_xlabel('Delay (minutes)')
         axes[0].set_xticks(edges)
         axes[0].set_ylabel('Frequency')
-        axes[0].set_title('Distribution of Flight Delays ({} flights ; {} removed)'.format(len(dts), len(self.removed_ids)))
+        axes[0].set_title('Distribution of Flight Delays ({} flights considered ; {} removed)'.format(len(dts), len(self.removed_ids)))
         axes[0].vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
         axes[0].vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
         axes[0].vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
@@ -898,7 +902,9 @@ def main():
     parser.add_argument('solver',help='Location of the DubinsFleetPlanner solver')
     
     parser.add_argument('-d','--mdist',type=float,help='Minimal distance separating aircraft, in NM. Default to 3.',default=3)
-    parser.add_argument('-v','--speed',type=float,help='Nominal speed for aircraft, in knots. Default to 200.',default=200)
+    parser.add_argument('--lspeed',type=float,help='Desired final speed for landing aircraft, in knots. Default to 100.',default=200)
+    parser.add_argument('--dspeed',type=float,help='Desired final speed for departing aircraft, in knots. Default to 400.',default=500)
+    parser.add_argument('--cspeed',action='store_true',help="Flag. If set, airspeed is set to a constant (the target value)")
     parser.add_argument('-r','--turn-radius',dest='turn_radius',
         type=float, help='Minimal turn radius for all aircraft. Default to 1.33 NM (full turn in 2 minutes at 250 kt)',default=1.33)
     # parser.add_argument('-w','--wind',dest='wind', nargs=2,
@@ -913,8 +919,12 @@ def main():
                         help='Distance relative to runway threshold for defining last straight, in NM. Default to 10.',default=10)
     parser.add_argument('--cmd-shift',type=float,dest='cmd_shift',
                         help="Duration (in minutes) for which no commands should issued (that is, go straight). Default to 1 minute.", default=1)
+    parser.add_argument('--lookahead',type=float,dest='lookahead',default=30,
+                        help="Look ahead duration (in minutes). Describe how far in the future should one look ahead before planning new trajectories in order to take into accounts new aircraft.")
     parser.add_argument('--influence-radius',type=float,dest='influence_radius',
                         help="Radius of influence from the airports barycenter, in NM. If set, aircraft will be scheduled only within this radius. Disabled by default.",default=None)
+    parser.add_argument('--departing-radius',type=float,dest='departing_radius',
+                        help="Influence radius for departing aircraft. Only relevant if 'influence-radius' is already set. Modified value applied to departing aircraft. Default to be equalt to 'influence-radius'.",default=None)
     parser.add_argument('--epsg',type=int,help="EPSG code for XY projection of (lat,lon) coordinates from WGS84. Default to the UTM zone of the first airport in the ICAO list.",
                         default=None)
     
@@ -954,13 +964,15 @@ def main():
     else:
         transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{args.epsg}")
 
-    expected_speed = args.speed # kts
+    expected_landing_speed = args.lspeed # kts
+    expected_departing_speed = args.dspeed # kts
     threshold_shift = args.threshold_shift # NM
     timeshifts = pd.timedelta_range(f"{args.intervals[0]} minute",f"{args.intervals[1]} minute",freq=f"{float(args.intervals[2])*60}s").to_list()
 
     ## Generate borders ##
     geometric_obstacle_json_path = None
     influence_circle = None
+    outgoing_circle = None
     if args.influence_radius is not None:
         geometric_obstacle_json_path = pathlib.Path("geometric_obstacles.json")
         avgx,avgy = 0,0
@@ -972,6 +984,12 @@ def main():
         avgy /= len(airports)
         make_circle_boundary_file(avgx/NM_TO_METERS,avgy/NM_TO_METERS,args.influence_radius,geometric_obstacle_json_path)
         influence_circle = InfluenceCircle.from_xy_meters(avgx,avgy,args.influence_radius*NM_TO_METERS,transformer)
+        
+        if args.departing_radius is not None:
+            outgoing_circle = InfluenceCircle.from_xy_meters(avgx,avgy,args.departing_radius*NM_TO_METERS,transformer)
+        else:
+            outgoing_circle = influence_circle
+       
 
     for traffic in traffic_iter:
         print(f"Processing traffic for day {traffic.data['timestamp'].min().date()}")
@@ -989,7 +1007,7 @@ def main():
             fig.tight_layout()
             plt.show()
         
-        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_speed, filtered_traffic, influence_circle)
+        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_landing_speed, expected_departing_speed, filtered_traffic, args.cspeed, outgoing_circle)
         print(f"Total flight endpoints generated: {len(endpoints)}")
         # for ep in endpoints:
             # ax.scatter(ep.start.to_pose3D(transformer,True).x,ep.start.to_pose3D(transformer,True).y,marker='o',color='k',alpha=0.2)
@@ -1001,7 +1019,7 @@ def main():
                                 transformer,
                                 timeshifts,
                                 threshold_shift,
-                                args.cmd_shift*expected_speed/60,
+                                args.cmd_shift*expected_landing_speed/60,
                                 pd.Timedelta(f"{args.time_threshold} minute"),
                                 pd.Timedelta(f"{args.final_time} minute"),
                                 max_reschedule=args.max_reschedule,
@@ -1011,6 +1029,7 @@ def main():
         )
         
         sim.timedistance = args.tdist
+        sim.lookahead_time = pd.Timedelta(minutes=args.lookahead)
         
         if geometric_obstacle_json_path is not None:
             sim.geometric_obstacle_json_path = geometric_obstacle_json_path
@@ -1022,6 +1041,12 @@ def main():
                 ax.add_patch(
                     Circle((x,y),radius=influence_circle.radius,fill=False,linestyle='--',color='k',label=f"Influence radius ({influence_circle.radius:.1f} NM)")
                 )
+                if outgoing_circle is not None and abs(outgoing_circle.radius - influence_circle.radius) > 1e-2:
+                    xbis,ybis,_ = outgoing_circle.to_xy_NM(transformer)
+                    
+                    ax.add_patch(
+                        Circle((xbis,ybis),radius=outgoing_circle.radius,fill=False,linestyle='--',color='g',label=f"Departing radius ({outgoing_circle.radius:.1f} NM)")
+                    )
         
         # try:
         #     b = float(args.border)
@@ -1061,20 +1086,21 @@ def main():
             break
 
 def __wrapped_extract_flight_endpoints(args):
-    flight, airports, expected_speed, circle = args
+    flight, airports, expected_landing_speed, expected_departing_speed, circle, constant_speed = args
     airports:Airports
     
     id = flight.flight_id.split('_')[1]
     
     stats = ACStats(
                 int(id),
-                expected_speed/60, # Convert from kts (NM/h) to NM/minute
+                expected_departing_speed/60,
                 1.,
-                expected_speed/(60*np.pi) # Full circle in 2 minutes
+                expected_landing_speed/(60*np.pi), # Full circle in 2 minutes
+                expected_landing_speed/60, # Convert from kts (NM/h) to NM/minute
             )
     
     
-    o = extract_flight_endpoints(flight,airports,stats,circle,0)
+    o = extract_flight_endpoints(flight,airports,stats,circle,constant_speed,3)
     if o is None:
         return None
     else:
@@ -1085,15 +1111,17 @@ def __wrapped_extract_flight_endpoints(args):
             assert np.isfinite(o[1].stats.target_airspeed)
         return o[1] if o[1] is not None else None
 
-def generate_flightEndpoints(airports:Airports, expected_speed:float, filtered_traffic:Traffic, influence_circle:Optional[InfluenceCircle]) -> list[FlightEndpoints]:
+def generate_flightEndpoints(airports:Airports, expected_landing_speed:float, expected_departing_speed:float, filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle]) -> list[FlightEndpoints]:
     endpoints = []
     
     number_of_flights = filtered_traffic.flight_ids.__len__()
         
     args_it = zip(filtered_traffic.iterate(),
                   itertools.repeat(airports, number_of_flights),
-                  itertools.repeat(expected_speed, number_of_flights),
-                  itertools.repeat(influence_circle, number_of_flights))
+                  itertools.repeat(expected_landing_speed, number_of_flights),
+                  itertools.repeat(expected_departing_speed, number_of_flights),
+                  itertools.repeat(influence_circle, number_of_flights),
+                  itertools.repeat(constant_speed, number_of_flights))
 
     
     
