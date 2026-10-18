@@ -27,7 +27,7 @@ from .SpeedProfile import SpeedProfile
 
 ######################################## Dubins problem writing and parsing ########################################
 
-_CSV_problem_statement_header = "ac_id,start_x,start_y,start_z,start_theta,end_x,end_y,end_z,end_theta,airspeed,climb,turn_radius,dt".split(',')
+_CSV_problem_statement_header = "ac_id,start_x,start_y,start_z,start_theta,end_x,end_y,end_z,end_theta,airspeed,climb,turn_radius,target_airspeed,min_acceleration,max_acceleration,dt".split(',')
 
 @dataclasses.dataclass
 class AC_PP_Problem:
@@ -126,11 +126,15 @@ def write_pathplanning_problem_to_CSV(file,data:typing.Sequence[AC_PP_Problem],o
             turn_radius = p.stats.turn_radius
             dt          = p.dt
             
+            target_airspeed  = p.stats.target_airspeed
+            min_acceleration = p.stats.min_acceleration
+            max_acceleration = p.stats.max_acceleration
+            
             filled_timeslots = [""] * max_timeslots
             for i,v in enumerate(p.timeslots):
                 filled_timeslots[i] = str(v)
             
-            writer.writerow([ac_id,start_x,start_y,start_z,start_theta,end_x,end_y,end_z,end_theta,airspeed,climb,turn_radius,dt]+filled_timeslots)
+            writer.writerow([ac_id,start_x,start_y,start_z,start_theta,end_x,end_y,end_z,end_theta,airspeed,climb,turn_radius,target_airspeed,min_acceleration,max_acceleration,dt]+filled_timeslots)
 
 
 def parse_pathplanning_problem_from_CSV(file:pathlib.Path) -> list[AC_PP_Problem]:
