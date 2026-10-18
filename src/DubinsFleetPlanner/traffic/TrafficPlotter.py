@@ -50,6 +50,9 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
     shifts = (expected_speed/60,expected_speed/60,threshold_shift)
     
     for i,flight in enumerate(traffic):
+        if flight.icao24 is None:
+            continue
+        
         stats = ACStats(
             i,
             expected_speed/60, # Convert from kts (NM/h) to NM/minute
@@ -65,12 +68,12 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
         else:
             if r[0].dest_ICAO is not None and r[0].dest_runway is not None:
                 if (r[0].dest_ICAO,r[0].dest_runway) not in colordict.keys():
-                    colordict[(r[0].dest_ICAO,r[0].dest_runway)] = cmap(cmap_i/cmap_div)
+                    colordict[(r[0].dest_ICAO,r[0].dest_runway + " (arriving)")] = cmap(cmap_i/cmap_div)
                     cmap_i = (cmap_i+1) % cmap_div
                 color = colordict[(r[0].dest_ICAO,r[0].dest_runway)]
             elif r[0].start_ICAO is not None and r[0].start_runway is not None:
                 if (r[0].start_ICAO,r[0].start_runway) not in colordict.keys():
-                    colordict[(r[0].start_ICAO,r[0].start_runway)] = cmap(cmap_i/cmap_div)
+                    colordict[(r[0].start_ICAO,r[0].start_runway + " (departing)")] = cmap(cmap_i/cmap_div)
                     cmap_i = (cmap_i+1) % cmap_div
                 color = colordict[(r[0].start_ICAO,r[0].start_runway)]
             else:

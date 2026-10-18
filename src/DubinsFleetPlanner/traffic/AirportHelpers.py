@@ -61,6 +61,7 @@ def get_other_runway_name(rw_name:str) -> str:
     """Given a runway name, try to find its name in the other direction.
     
     The rules are as follows:
+    - If the name is "Unknown", returns "Unknown"
     - The name in split in two parts: a number (the first two characters) and an optional letter (the third character, if it exists)
     - The number is converted to the other direction by adding 18 if it is less than 18, and substracting 18 otherwise. If the result is 0, it is replaced by 36.
     - The letter, if it exists, is converted as follows: C is unchanged, R becomes L and L becomes R.
@@ -71,6 +72,8 @@ def get_other_runway_name(rw_name:str) -> str:
     Returns:
         str: Its guessed name in the other direction
     """
+    if rw_name == "Unknown":
+        return "Unknown"
     rw_num = int(rw_name[:2])
     rw_numbis = rw_num + (18 if rw_num < 18 else -18)
     if rw_numbis == 0:

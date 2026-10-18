@@ -622,20 +622,29 @@ class ArrivalsSimulator:
         my_cm = cm["tab10"]
         i = 0
         for t in self.tasklist:
-            try:
-                color = icao_rw_colordict[(t.dest_ICAO,t.dest_runway)]
-            except KeyError:
-                color = my_cm(i/10)
-                i+=1
-                icao_rw_colordict[(t.dest_ICAO,t.dest_runway)] = color
-            self.__color_dict[t.stats.id] = color
+            if not t.departing:
+                try:
+                    color = icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")]
+                except KeyError:
+                    color = my_cm(i/10)
+                    i+=1
+                    icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")] = color
+            else:
+                try:
+                    color = icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")]
+                except KeyError:
+                    color = my_cm(i/10)
+                    i+=1
+                    icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")] = color
+                    
+            self.__color_dict[t.id] = color
                 
         
         maxx = -np.inf
         maxy = -np.inf
         minx = np.inf
         miny = np.inf
-            
+        # Setting up runways colors
         for t in self.tasklist:
             start_p = t.start.to_pose3D(self.transformer,True)
             end_p = t.end.to_pose3D(self.transformer,True)
@@ -652,30 +661,78 @@ class ArrivalsSimulator:
             miny = min(miny,start_p.y)
             miny = min(miny,end_p.y)
             
-            end_proj = t.end.project(self.threshold_shift*NM_TO_METERS).to_pose3D(self.transformer,True)
             
             color = self.__color_dict[t.id]
-            if t.dest_airport is not None and t.dest_ICAO is not None and t.dest_runway is not None:
-                if (t.dest_ICAO,t.dest_runway) not in self.__dest_dict:
+            if not t.departing:
+                assert t.dest_airport is not None and t.dest_ICAO is not None
+                if (t.dest_ICAO,t.dest_runway + " (arriving)") not in self.__dest_dict:
+                    # try:
+                        # print(color,icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")])
+                    # except KeyError as k:
+                        # print(icao_rw_colordict)
+                        # raise k
+                    if t.dest_runway == "Unknown":
+                        dest_line = self.__axes.plot(
+                                    [],[],
+                                    linestyle='-',
+                                    alpha=0.5,
+                                    color=color,
+                                    label=f"{t.dest_ICAO} : {t.dest_runway} (arriving)"
+                                )[0]
+                    else:
+                        rw_1 = get_runway(t.dest_airport,t.dest_runway)
+                        rw_2 = get_runway(t.dest_airport,get_other_runway_name(t.dest_runway))
+                        
+                        assert rw_1 is not None
+                        assert rw_2 is not None
+                        
+                        proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
+                        proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
+                        
+                        dest_line = self.__axes.plot(
+                            [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
+                            linestyle='-',
+                            alpha=0.5,
+                            color=color,
+                            label=f"{t.dest_ICAO} : {t.dest_runway} (arriving)"
+                        )[0]
                     
-                    rw_1 = get_runway(t.dest_airport,t.dest_runway)
-                    rw_2 = get_runway(t.dest_airport,get_other_runway_name(t.dest_runway))
+                    self.__dest_dict[(t.dest_ICAO,t.dest_runway + " (arriving)")] = dest_line
+            else:
+                assert t.start_airport is not None and t.start_ICAO is not None
+                if (t.start_ICAO,t.start_runway + " (departing)") not in self.__dest_dict:
+                    # try:
+                        # print(color,icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")])
+                    # except KeyError as k:
+                        # print(icao_rw_colordict)
+                        # raise k
+                    if t.start_runway == "Unknown":
+                        dest_line = self.__axes.plot(
+                                    [],[],
+                                    linestyle='-',
+                                    alpha=0.5,
+                                    color=color,
+                                    label=f"{t.start_ICAO} : {t.start_runway} (departing)"
+                                )[0]
+                    else:
+                        rw_1 = get_runway(t.start_airport,t.start_runway)
+                        rw_2 = get_runway(t.start_airport,get_other_runway_name(t.start_runway))
+                        
+                        assert rw_1 is not None
+                        assert rw_2 is not None
+                        
+                        proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
+                        proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
+                        
+                        dest_line = self.__axes.plot(
+                            [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
+                            linestyle='-',
+                            alpha=0.5,
+                            color=color,
+                            label=f"{t.start_ICAO} : {t.start_runway} (departing)"
+                        )[0]
                     
-                    assert rw_1 is not None
-                    assert rw_2 is not None
-                    
-                    proj1 = self.transformer.transform(rw_1.latitude,rw_1.longitude)
-                    proj2 = self.transformer.transform(rw_2.latitude,rw_2.longitude)
-                    
-                    dest_line = self.__axes.plot(
-                        [proj1[0]/NM_TO_METERS,proj2[0]/NM_TO_METERS],[proj1[1]/NM_TO_METERS,proj2[1]/NM_TO_METERS],
-                        linestyle='-',
-                        alpha=0.5,
-                        color=color,
-                        label=f"{t.dest_ICAO} : {t.dest_runway}"
-                    )[0]
-                    
-                    self.__dest_dict[(t.dest_ICAO,t.dest_runway)] = dest_line
+                    self.__dest_dict[(t.start_ICAO,t.start_runway + " (departing)")] = dest_line
         
         if set_xylims:
             self.__axes.set_xlim(minx,maxx)

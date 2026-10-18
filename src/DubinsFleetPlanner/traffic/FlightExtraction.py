@@ -160,9 +160,9 @@ class FlightEndpoints:
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
     departing:bool  # If true, the aircraft is leaving. Otherwise, it is landing
     start_airport:Optional[Airport] = None
-    start_runway:Optional[str]      = None
+    start_runway:str                = "Unknown"
     dest_airport:Optional[Airport]  = None
-    dest_runway:Optional[str]       = None
+    dest_runway:str                 = "Unknown"
     planned:bool                    = False
     
     @property
@@ -329,11 +329,12 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             dpt_proj = destination(first_dpt.latitude, first_dpt.longitude, first_dpt.track, threshold_shift * NM_TO_METERS)
         takeoff = flight.takeoff(start_airport,method="track_based").next()
         if takeoff is not None:
-            start_runway = takeoff.runway_max
+            airport = get_airport(takeoff.data["departing_airport"].iloc[0])
+            start_runway = airport.runways[takeoff.runway_max]['name']
             if dpt_proj is None:
                 dpt_proj = destination(takeoff.latitude, takeoff.longitude, takeoff.track, threshold_shift * NM_TO_METERS)
         
-        # By default, destination returns the bearing back to the original point. We need to correct it to keep the same direction
+        # By default, destination returns the bearing back to the original point. We need to correct it to keep the same direction.
         if dpt_proj is not None:
             dpt_proj = dpt_proj[0], dpt_proj[1], dpt_proj[2]+180
         
@@ -350,8 +351,11 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
 
     flight.data.sort_values("timestamp",inplace=True)
     if first_dpt is None:
-        first_dpt = flight.data.iloc[1]
-    
+        try:
+            first_dpt = flight.data.iloc[1]
+        except IndexError:
+            return None
+
     last_dpt = flight.data.iloc[-2]
     
     dest_runway = None
@@ -368,8 +372,8 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         last_dpt["timestamp"],
         last_dpt["timestamp"],
         stats, departing,
-        start_airport,start_runway,
-        dest_airport,dest_runway,
+        start_airport,start_runway if start_runway is not None else "Unknown",
+        dest_airport,dest_runway if dest_runway is not None else "Unknown",
     )
     
     end_to_ils = None
@@ -390,7 +394,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
                 stats, departing,
-                start_airport,start_runway,
+                start_airport,start_runway if start_runway is not None else "Unknown",
                 dest_airport,fix_dpt["ILS"])
         else: # It is a departing flight
             assert departing is True
@@ -407,7 +411,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
                 stats, departing,
-                start_airport,start_runway,
-                dest_airport,None)
+                start_airport,start_runway if start_runway is not None else "Unknown",
+                dest_airport,"Unknown")
     
     return (end_to_end,end_to_ils)
