@@ -363,7 +363,10 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             start_runway_name = "Unknown"
         else:
             start_runway = start_airport.runways[takeoff.runway_max]
-            start_runway_name = start_airport.runways.data.iloc[takeoff.runway_max]['name']
+            if isinstance(takeoff.runway_max,int):
+                start_runway_name = start_airport.runways.data.iloc[takeoff.runway_max]['name']
+            else:
+                start_runway_name = takeoff.runway_max
         first_dpt = get_first_airbone_dpt(flight)
         assert first_dpt is not None, f"Flight {flight} is departing from airport {start_airport.icao} but no airborne point could be found.\n{flight.data}"
         # if start_runway is not None:
