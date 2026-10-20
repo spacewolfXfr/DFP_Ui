@@ -962,7 +962,7 @@ def main():
     if args.data is None:
         traffic_iter = [samples.quickstart]
     else:
-        traffic_iter = iter_flight_by_period(args.data,'2h',id_column='flight_id')
+        traffic_iter = iter_flight_by_period(args.data,args.period,id_column='flight_id')
         if traffic_iter is None:
             print("ERROR: Importing traffic failed. Exiting")
             exit(1)
