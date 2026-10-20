@@ -3,11 +3,13 @@ from __future__ import annotations
 import typing
 from typing import Optional
 import dataclasses
-import numpy as np
+import itertools
+from concurrent.futures import ProcessPoolExecutor
 
+import numpy as np
 import pandas as pd
 
-from traffic.core import Flight
+from traffic.core import Flight,Traffic
 from traffic.core.structure import Airport
 from traffic.data.basic.airports import Airports
 
@@ -144,10 +146,25 @@ def get_second_airbone_dpt(flight:Flight) -> Optional[pd.Series]:
     if airborne is None:
         return None
     sorted = airborne.data.sort_values("timestamp")
+    
     if len(sorted) < 2:
         return None
     else:
         return sorted.iloc[1]
+    
+def get_after_first_airbone(flight:Flight,duration:pd.Timedelta) -> Optional[pd.Series]:
+    airborne = flight.airborne()
+    if airborne is None:
+        return None
+    fst_timestamp = airborne.data["timestamp"].min() # type: ignore
+    try:
+        flight_after = airborne.after(fst_timestamp + duration)
+        after_first_index = flight_after.data['timestamp'].argmin()
+        after_first = flight_after.data.iloc[after_first_index]
+    except (TypeError,AttributeError):
+        return None
+    
+    return after_first
 
 
 @dataclasses.dataclass
@@ -157,6 +174,7 @@ class FlightEndpoints:
     end:LatlonPose
     end_time:pd.Timestamp
     initial_end_time:pd.Timestamp
+    flight_id:str
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
     departing:bool  # If true, the aircraft is leaving. Otherwise, it is landing
     start_airport:Optional[Airport] = None
@@ -172,7 +190,7 @@ class FlightEndpoints:
     @id.setter
     def id(self,_id:int):
         self.stats.id = _id
-        
+    
     @property
     def start_ICAO(self) -> Optional[str]:
         return self.start_airport.icao if self.start_airport is not None else None    
@@ -196,6 +214,7 @@ class FlightEndpoints:
             self.end,
             self.end_time,
             self.initial_end_time,
+            self.flight_id,
             self.stats,
             self.departing,
             self.start_airport,
@@ -284,10 +303,16 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     except Exception as e:
         print(f"Error extracting landing airport for flight {flight}: {e}")
         dest_airport = flight_landing(flight,candidate_airports)
-        
+    
+    flight = flight.cumulative_distance(compute_gs=True,compute_track=True).airborne() # type: ignore
+    if flight is None or len(flight.data) < 2:
+        return None
     flight.data['track'] = flight.data['track'].fillna(flight.data.pop('compute_track'))
-    flight = Flight(flight.data.dropna(subset=["latitude","longitude","altitude","track"]))
-    # print(f"Flight endpoints extraction: {len(flight.data)} points after dropping NaN values.\n\tStart airport: {start_airport}\n\tDestination airport: {dest_airport}")
+    flight = Flight(flight.data.dropna(subset=["latitude","longitude","track"]))
+    
+    if flight.flight_id is None:
+        flight = flight.assign_id()
+    assert isinstance(flight.flight_id,str), ""
     
     ## Datapoint containing aircraft fix (either for takeoff or landing) and the runway if applicable
     fix_dpt = None
@@ -298,6 +323,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     departing = False
     
     if dest_airport is not None and dest_airport.icao in candidate_airports.data.icao.values:
+        flight.landing()
         fix_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
         fix_dpt = fix_dpt if fix_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
         try:
@@ -308,7 +334,6 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         # last_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
         if fix_dpt is not None:
             runway = get_runway(dest_airport,fix_dpt["ILS"])
-            # print(f"Flight {flight} is landing at airport {dest_airport.icao} on runway {runway.name} (ILS: {fix_dpt['ILS']})")
             if runway is not None:
                 # Turn around and convert NM to meters
                 rw_proj = destination(runway.latitude, runway.longitude, runway.bearing + 180, threshold_shift * NM_TO_METERS)
@@ -321,22 +346,35 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     ## Check for takeoff point in the departing case, as well as the influence circle limit if provided
     first_dpt = None
     dpt_proj = None
-    start_runway = None
+    start_runway_name = "Unknown"
     if start_airport is not None and start_airport.icao in candidate_airports.data.icao.values:
         departing = True
-        first_dpt = get_second_airbone_dpt(flight)
-        if first_dpt is not None:
-            dpt_proj = destination(first_dpt.latitude, first_dpt.longitude, first_dpt.track, threshold_shift * NM_TO_METERS)
-        takeoff = flight.takeoff(start_airport,method="track_based").next()
-        if takeoff is not None:
-            airport = get_airport(takeoff.data["departing_airport"].iloc[0])
-            start_runway = airport.runways[takeoff.runway_max]['name']
-            if dpt_proj is None:
-                dpt_proj = destination(takeoff.latitude, takeoff.longitude, takeoff.track, threshold_shift * NM_TO_METERS)
+        try:
+            takeoff = flight.takeoff(start_airport,method='track_based').next()
+        except Exception as e:
+            takeoff = flight.takeoff(start_airport,method='polygon_based').next()
+            
+        if takeoff is None:
+            start_runway = None
+            start_runway_name = "Unknown"
+        else:
+            start_runway = start_airport.runways[takeoff.runway_max]
+            start_runway_name = start_airport.runways.data.iloc[takeoff.runway_max]['name']
+        first_dpt = get_first_airbone_dpt(flight)
+        assert first_dpt is not None, f"Flight {flight} is departing from airport {start_airport.icao} but no airborne point could be found.\n{flight.data}"
+        # if start_runway is not None:
+            # dpt_proj = destination(first_dpt.latitude, first_dpt.longitude, float(start_runway_name[:2])*10, threshold_shift * NM_TO_METERS)
+        # else:
+        dpt_proj = destination(first_dpt.latitude, first_dpt.longitude,first_dpt.track,threshold_shift * NM_TO_METERS)
+            
+        # if abs(float(start_runway_name[:2])*10 - first_dpt.track) > 10:
+            # print(f"{flight.flight_id} start track disagreement: runway {float(start_runway_name[:2])*10} VS track {first_dpt.track}")
+        
+        if (first_dpt.track < 180):
+            print(f"{flight.flight_id} goes east: runway {float(start_runway_name[:2])*10} VS track {first_dpt.track}")
         
         # By default, destination returns the bearing back to the original point. We need to correct it to keep the same direction.
-        if dpt_proj is not None:
-            dpt_proj = dpt_proj[0], dpt_proj[1], dpt_proj[2]+180
+        dpt_proj = dpt_proj[0], dpt_proj[1], dpt_proj[2]+180
         
         if circle is not None:
             # Find the first point outside the influence circle
@@ -356,7 +394,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         except IndexError:
             return None
 
-    last_dpt = flight.data.iloc[-2]
+    last_dpt = flight.data.iloc[-1]
     
     dest_runway = None
     if fix_dpt is not None:
@@ -371,8 +409,9 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         flight_datapoint_to_pose(last_dpt),
         last_dpt["timestamp"],
         last_dpt["timestamp"],
+        flight.flight_id,
         stats, departing,
-        start_airport,start_runway if start_runway is not None else "Unknown",
+        start_airport,start_runway_name,
         dest_airport,dest_runway if dest_runway is not None else "Unknown",
     )
     
@@ -393,8 +432,9 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 LatlonPose(rw_proj[0],rw_proj[1],fix_dpt["altitude"],rw_proj[2]),
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
+                flight.flight_id,
                 stats, departing,
-                start_airport,start_runway if start_runway is not None else "Unknown",
+                start_airport,start_runway_name,
                 dest_airport,fix_dpt["ILS"])
         else: # It is a departing flight
             assert departing is True
@@ -410,8 +450,77 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 flight_datapoint_to_pose(fix_dpt),
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
+                flight.flight_id,
                 stats, departing,
-                start_airport,start_runway if start_runway is not None else "Unknown",
+                start_airport,start_runway_name,
                 dest_airport,"Unknown")
     
     return (end_to_end,end_to_ils)
+
+
+def __wrapped_extract_flight_endpoints(args):
+    flight, airports, expected_landing_speed, expected_departing_speed, circle, constant_speed = args
+    airports:Airports
+    
+    id = flight.flight_id.split('_')[1]
+    
+    stats = ACStats(
+                int(id),
+                expected_departing_speed/60,
+                1.,
+                expected_landing_speed/(60*np.pi), # Full circle in 2 minutes
+                expected_landing_speed/60, # Convert from kts (NM/h) to NM/minute
+            )
+    
+    
+    o = extract_flight_endpoints(flight,airports,stats,circle,constant_speed,3)
+    return o
+
+def generate_flightEndpoints(airports:Airports, 
+                             expected_landing_speed:float, expected_departing_speed:float, 
+                             filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle],
+                             raw_endpoints:bool=False) -> dict[str,FlightEndpoints]:
+    endpoints = []
+    
+    number_of_flights = filtered_traffic.flight_ids.__len__()
+        
+    args_it = zip(filtered_traffic.iterate(),
+                  itertools.repeat(airports, number_of_flights),
+                  itertools.repeat(expected_landing_speed, number_of_flights),
+                  itertools.repeat(expected_departing_speed, number_of_flights),
+                  itertools.repeat(influence_circle, number_of_flights),
+                  itertools.repeat(constant_speed, number_of_flights))
+
+    
+    
+    with ProcessPoolExecutor() as executor:
+        endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
+    
+    if raw_endpoints:
+        endpoints = {ep[0].flight_id: ep[0] for ep in endpoints if ep is not None}
+    else:
+        endpoints = {ep[0].flight_id: ep[1] for ep in endpoints if ep is not None and ep[1] is not None}
+    return endpoints
+
+def generate_both_flightEndpoints(airports:Airports, 
+                             expected_landing_speed:float, expected_departing_speed:float, 
+                             filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle])\
+                                 -> dict[str,tuple[FlightEndpoints,FlightEndpoints|None]]:
+    endpoints = []
+    
+    number_of_flights = filtered_traffic.flight_ids.__len__()
+        
+    args_it = zip(filtered_traffic.iterate(),
+                  itertools.repeat(airports, number_of_flights),
+                  itertools.repeat(expected_landing_speed, number_of_flights),
+                  itertools.repeat(expected_departing_speed, number_of_flights),
+                  itertools.repeat(influence_circle, number_of_flights),
+                  itertools.repeat(constant_speed, number_of_flights))
+
+    
+    
+    with ProcessPoolExecutor() as executor:
+        endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
+    
+    endpoints = {ep[0].flight_id: ep for ep in endpoints if ep is not None}
+    return endpoints
