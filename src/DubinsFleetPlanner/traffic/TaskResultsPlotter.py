@@ -100,41 +100,40 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     mean = np.mean(dts)
     median = np.median(dts)
     std = np.std(dts)
-    
-    
-    fig,axes = plt.subplots(2,1)
-    axes:tuple[Axes,Axes,Axes]
-    bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
-    axes[0].bar_label(bars, fontsize=20, color='navy')
-    axes[0].set_xlabel('Delay (minutes)')
-    axes[0].set_xticks(edges)
-    axes[0].set_ylabel('Frequency')
-    axes[0].set_title('Distribution of Flight Delays ({} flights considered ; {} removed)'.format(len(dts), removed_tasks_count))
-    axes[0].vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
-    axes[0].vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
-    axes[0].vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
-    axes[0].legend()
+        
+    _,hist_ax = plt.subplots(1,1,figsize=(16,9))
+    bars = hist_ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
+    hist_ax.bar_label(bars, fontsize=20, color='navy')
+    hist_ax.set_xlabel('Delay (minutes)')
+    hist_ax.set_xticks(edges)
+    hist_ax.set_ylabel('Frequency')
+    hist_ax.set_title('Distribution of Flight Delays ({} flights considered ; {} removed)'.format(len(dts), removed_tasks_count))
+    hist_ax.vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
+    hist_ax.vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
+    hist_ax.vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
+    hist_ax.legend()
     
     
     # Lollipop plot
+    _,time_ax = plt.subplots(1,1,figsize=(16,9))
     cmap = plt.get_cmap('coolwarm')
     colors = cmap((1+dts/abs_max_dt)/2)
     
     arriving_colors = cmap((1+np.array(arriving_dts)/abs_max_dt)/2)
     departing_colors = cmap((1+np.array(departing_dts)/abs_max_dt)/2)
     
-    axes[1].vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
-    axes[1].scatter(arriving_ends,arriving_dts, marker='o', c=arriving_colors, edgecolors='k', label='Arriving',zorder=2.2)
-    axes[1].scatter(departing_ends,departing_dts, marker='s', c=departing_colors, edgecolors='k', label='Departing',zorder=2.2)
-    axes[1].scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), marker='o', c='k', edgecolors='k', label='Removed (Arriving)', zorder=2.2)
-    axes[1].scatter(removed_departing_time,np.zeros(len(removed_departing_time)), marker='s', c='k', edgecolors='k', label='Removed (Departing)', zorder=2.2)
+    time_ax.vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
+    time_ax.scatter(arriving_ends,arriving_dts, marker='o', c=arriving_colors, edgecolors='k', label='Arriving',zorder=2.2)
+    time_ax.scatter(departing_ends,departing_dts, marker='s', c=departing_colors, edgecolors='k', label='Departing',zorder=2.2)
+    time_ax.scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), marker='o', c='k', edgecolors='r', label='Removed (Arriving)', zorder=2.2)
+    time_ax.scatter(removed_departing_time,np.zeros(len(removed_departing_time)), marker='s', c='k', edgecolors='r', label='Removed (Departing)', zorder=2.2)
     
-    xlims = axes[1].get_xlim()
+    xlims = time_ax.get_xlim()
     
     # Aircraft count plot
-    twinax = axes[1].twinx()
+    twinax = time_ax.twinx()
     times,counts = count_aircraft_in_flight(tasks,pd.Timedelta(minutes=60),pd.Timedelta(minutes=1))
-    twinax.step(times,counts,color='k',where='pre',zorder=1.5,label='Aircraft in flight')
+    twinax.step(times,counts,color='gray',alpha=0.7,where='pre',zorder=1.5,label='Aircraft in flight')
     twinax.fill_between(times,counts,step='pre',color='gray',alpha=0.2,zorder=1)
     twinax.set_xlim(xlims)
     twinax.set_ylim(0,max(counts)+1)
@@ -143,12 +142,12 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     twinax.grid(True,axis='y',linestyle=':')
     twinax.legend()
     
-    axes[1].hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
-    axes[1].set_xlabel('Time of arrival')
-    axes[1].set_ylabel('Delay (minutes)')
-    axes[1].set_title('Flight Delays Over Time')
-    axes[1].grid(True,axis='y')
-    axes[1].legend()
+    time_ax.hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
+    time_ax.set_xlabel('Time of arrival')
+    time_ax.set_ylabel('Delay (minutes)')
+    time_ax.set_title('Flight Delays Over Time')
+    time_ax.grid(True,axis='y')
+    time_ax.legend()
             
     plt.show()
     
