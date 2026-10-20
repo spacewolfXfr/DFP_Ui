@@ -62,8 +62,10 @@ def make_colordict(tasks:list[FlightEndpoints], colormap:str|typing.Callable[[fl
                 color = my_cm(i/color_period)
                 i+=1
                 runway_dict[(t.start_ICAO,t.start_runway,True)] = color
-                
-        id_dict[t.flight_id] = color
+        
+        if t.icao24 in id_dict.keys():
+            assert id_dict[t.icao24] == color
+        id_dict[t.icao24] = color
     colordict_counter = i
     return runway_dict, id_dict
 
@@ -184,23 +186,23 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints
     shifts = (expected_speed/60,expected_speed/60,expected_speed/60,expected_speed/60)
     
     if endpoints is None:
-        endpoints = generate_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None,True)
+        endpoints = generate_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None,True)    
     
     colordict, id_colordict = make_colordict(list(endpoints.values()),existing=colordict)
         
     for flight in traffic:
-        if flight.flight_id is None:
+        if flight.icao24 is None:
             continue
-        assert isinstance(flight.flight_id,str)
-    
-        # try:
-        r = endpoints[flight.flight_id]
-        color = id_colordict[flight.flight_id]
-        # except KeyError:    
-            # flight.plot(ax,c=default_color,alpha=0.3)
-            # continue
+        assert isinstance(flight.icao24,str)
         
-                
+    
+        try:
+            r = endpoints[flight.icao24]
+            color = id_colordict[flight.icao24]
+        except KeyError:    
+            flight.plot(ax,c=default_color,alpha=0.3)
+            continue
+        
             
         flight.plot(ax,color=color,alpha=0.3)
         start       = r.start
@@ -285,7 +287,7 @@ def main():
         with open(args.endpoints, 'rb') as f:
             summary = pickle.load(f)
             assert isinstance(summary, SimulationSummary), f"The summary file {args.endpoints} is not a SimulationSummary"
-            endpoints = {t.flight_id:t for t in summary.tasks}
+            endpoints = {t.icao24:t for t in summary.tasks}
     else:
         endpoints = None
     
@@ -300,6 +302,9 @@ def main():
             _, colordict = animate(airports, filtered_traffic, colordict=colordict)
         else:
             colordict = plot(airports, filtered_traffic, endpoints=endpoints, colordict=colordict)
+        cont = input("Enter 'y' to start simulation with the next period, quit otherwise: ")
+        if cont != 'y':
+            break
 
 
 if __name__ == '__main__':

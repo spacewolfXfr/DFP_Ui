@@ -144,7 +144,7 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     twinax.legend()
     
     axes[1].hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
-    axes[1].set_xlabel('Time')
+    axes[1].set_xlabel('Time of arrival')
     axes[1].set_ylabel('Delay (minutes)')
     axes[1].set_title('Flight Delays Over Time')
     axes[1].grid(True,axis='y')
