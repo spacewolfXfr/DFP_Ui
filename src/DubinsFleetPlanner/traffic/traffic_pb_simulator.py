@@ -9,11 +9,10 @@ import typing
 from typing import Optional
 import subprocess
 import pathlib,tempfile
-import json
+import json,pickle
 import copy
-from concurrent.futures import ProcessPoolExecutor
-import itertools
 from enum import IntEnum
+from argparse import Namespace
 
 import numpy as np
 
@@ -30,7 +29,6 @@ import pandas as pd
 
 from traffic.core import Traffic
 from traffic.data import samples
-from traffic.data.basic.airports import Airports
 
 from DubinsFleetPlanner.ioUtils import AC_PP_Problem,ACStats,write_pathplanning_problem_to_CSV,print_FleetPlan_to_JSON,parse_trajectories_from_JSON
 from DubinsFleetPlanner.Dubins import Path,BasicPath,FleetPlan,DubinsMove
@@ -42,7 +40,8 @@ from pyproj import Transformer
 from .AirportHelpers import NM_TO_METERS, InfluenceCircle, get_airports, get_airport_latlon_transformer,get_other_runway_name,get_runway
 from .FlightExtraction import FlightEndpoints,LatlonPose,generate_flightEndpoints
 from .TrafficReader import iter_flight_by_period,filter_traffic
-from .TrafficPlotter import make_colordict,count_aircraft_in_flight
+from .TrafficPlotter import make_colordict
+from .TaskResultsPlotter import plot_endpoints_results,SimulationSummary
 
 from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,ColorType
 
@@ -78,8 +77,7 @@ def make_circle_boundary_file(xc:float,yc:float,radius:float,filepath:str|pathli
         with open(filepath,mode='w') as f:
             json.dump({'sections':sections},f)
             
-
-#################### Ongoing flights simulator ####################
+#################### Call the underlying solver ####################
 
 
 def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path,
@@ -148,6 +146,8 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     # output.check_returncode()
     return output
 
+#################### Ongoing flights simulator ####################
+
 @dataclasses.dataclass
 class ArrivalsSimulator:
     solver_path:pathlib.Path
@@ -160,7 +160,6 @@ class ArrivalsSimulator:
     lookahead_time:pd.Timedelta = pd.Timedelta(minutes=30)        # How far in the future to look for incoming or departing flights to be added as obstacles, in pd.Timedelta
     
     tasklist:list[FlightEndpoints] = dataclasses.field(default_factory=list)  # List of tasks to be done, sorted by start_time
-    removed_ids:set[int] = dataclasses.field(default_factory=set) # Storage for aircraft (id) removed due to minimal separation violation.
 
     ## Solver files
     geometric_obstacle_json_path:Optional[pathlib.Path]   = None # Given by the user
@@ -181,7 +180,6 @@ class ArrivalsSimulator:
     line_buffersize:int = 10 # Number of past points kept in visualisation
     __schedules_count:int = 0 # Number of calls to the solver
     timedistance:bool = False # If True, interpret separation as time-based separation (in minutes, to be multiplied by the speed of the aircraft). If False, interpret separation as distance-based separation (in NM).
-    traffic_log_path:Optional[pathlib.Path] = None
     __traffic_log:list[dict[str,typing.Any]] = dataclasses.field(default_factory=list,init=False,repr=False)
     
     ## Timekeeping
@@ -208,30 +206,25 @@ class ArrivalsSimulator:
         return self.__schedules_count    
 
     def __log_traffic_states(self, states:list[tuple[ACStats,Pose3D,float]], timestamp:pd.Timestamp) -> None:
-        if self.traffic_log_path is None:
-            return
-
         for stats, pose, speed in states:
+            task = self.get_task(stats.id)
             latlon = LatlonPose.from_pose3D(pose, self.transformer, from_NM=True)
             self.__traffic_log.append({
                 "timestamp": timestamp,
-                "icao24": str(stats.id),
+                "icao24": task.icao24,
                 "callsign": f"SIM{stats.id}",
                 "latitude": latlon.latitude,
                 "longitude": latlon.longitude,
                 "altitude": latlon.altitude,
                 "groundspeed": speed * 60,
                 "track": latlon.bearing,
-                "flight_id": str(stats.id),
+                "flight_id": task.flight_id,
             })
-
-    def write_traffic_log(self) -> Optional[Traffic]:
-        if self.traffic_log_path is None:
-            return None
-
-        traffic = Traffic(pd.DataFrame(self.__traffic_log))
-        traffic.to_parquet(self.traffic_log_path)
-        return traffic
+            
+    def write_traffic_log(self,path:pathlib.Path) -> Traffic:
+            traffic = Traffic(pd.DataFrame(self.__traffic_log))
+            traffic.to_parquet(path)
+            return traffic
     
     tempdir = tempfile.gettempdir()
     now = datetime.datetime.now()
@@ -248,7 +241,6 @@ class ArrivalsSimulator:
         self.__last_global_schedule = self.__t
         self.__end_of_times = max(t.end_time for t in self.tasklist)
         self.__task_index = dict()
-        self.__encountered_exception = None
         self.__last_schedules = dict()
         self.__schedules_count = 0
         self.__traffic_log = []
@@ -386,14 +378,14 @@ class ArrivalsSimulator:
                     raise ValueError(f"LOSS OF SEPARATION: {min_dist:.2f} NM between {ac1} and {ac2}. Both aircraft are planned!!!")
                 else:
                     if t1.planned:
-                        self.removed_ids.add(ac2)
+                        t2.removed = True
                         t2.end_time = self.__t
                         if self.scheduled is not None:
                             del self.scheduled.trajectories[ac2]
                             self.__remove_from_axes(ac2)
                         print(f"Removing {ac2} from the simulation")
                     else:
-                        self.removed_ids.add(ac1)
+                        t1.removed = True
                         t1.end_time = self.__t
                         if self.scheduled is not None:
                             del self.scheduled.trajectories[ac1]
@@ -558,14 +550,15 @@ class ArrivalsSimulator:
         new_paths:dict[int,tuple[ACStats,Path]] = {}
         future_paths:dict[int,tuple[ACStats,Path,float]] = {}
         for _,t in enumerate(self.tasklist):
-            id = t.stats.id
+            id = t.id
             
             # Task is removed due to loss of separation: skip it
-            if id in self.removed_ids:
+            if t.removed:
                 continue
             
             # Task already ended: remove drawing
             if t.end_time <= new_t:
+                t.completed = True
                 if (new_t - t.end_time) > timedelta*10:
                     self.__remove_from_axes(id)
                 continue
@@ -629,19 +622,18 @@ class ArrivalsSimulator:
             try:
                 states,success_schedule = self.step(timestep,threads)
                 self.__log_traffic_states(states, self.__t)
-                # log.append((self.__t,states))
-                # if self.__encountered_exception is not None:
-                    # break
             except KeyboardInterrupt:
                 print("Simulation interrupted by user.")
                 break
             
         plt.ioff()
-        self.write_traffic_log()
-        try:
-            self.report()
-        except Exception as e:
-            print("Could not produce report: ",e)
+        if self.__axes is not None:
+            try:
+                plot_endpoints_results(self.tasklist)
+            except Exception as e:
+                print("Could not produce report: ",e)
+            
+        return self.tasklist
         
     #################### Plotting ####################
         
@@ -682,11 +674,6 @@ class ArrivalsSimulator:
             if not t.departing:
                 assert t.dest_airport is not None and t.dest_ICAO is not None
                 if (t.dest_ICAO,t.dest_runway + " (arriving)") not in self.__dest_dict:
-                    # try:
-                        # print(color,icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")])
-                    # except KeyError as k:
-                        # print(icao_rw_colordict)
-                        # raise k
                     if t.dest_runway == "Unknown":
                         dest_line = self.__axes.plot(
                                     [],[],
@@ -717,11 +704,6 @@ class ArrivalsSimulator:
             else:
                 assert t.start_airport is not None and t.start_ICAO is not None
                 if (t.start_ICAO,t.start_runway + " (departing)") not in self.__dest_dict:
-                    # try:
-                        # print(color,icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")])
-                    # except KeyError as k:
-                        # print(icao_rw_colordict)
-                        # raise k
                     if t.start_runway == "Unknown":
                         dest_line = self.__axes.plot(
                                     [],[],
@@ -911,105 +893,7 @@ class ArrivalsSimulator:
             
             return min_dist,stat1.id,stat2.id
         else:
-            return None
-    
-    
-    def report(self):
-        arriving_dts = []
-        departing_dts = []
-        arriving_ends = []
-        departing_ends = []
-        removed_arriving_time = []
-        removed_departing_time = []
-        for task in self.tasklist:
-            # Consider only tasks ended and not removed due to loss of separation
-            if task.id in self.removed_ids:
-                if task.departing:
-                    removed_departing_time.append(task.end_time)
-                else:
-                    removed_arriving_time.append(task.end_time)
-            elif task.end_time < self.__t:
-                dt = (task.end_time - task.initial_end_time).total_seconds()/60
-                if task.departing:
-                    departing_dts.append(dt)
-                    departing_ends.append(task.end_time)
-                else:
-                    arriving_dts.append(dt)
-                    arriving_ends.append(task.end_time)
-                
-
-        dts = np.array(arriving_dts+departing_dts)
-        ends = np.array(arriving_ends+departing_ends)
-        
-        if len(dts) == 0 or len(ends) == 0:
-            print("WARNING: No data collected, cannot produce report")
-            return
-        
-        min_dt = int(np.floor(np.min(dts)))
-        max_dt = int(np.ceil(np.max(dts)))
-        abs_max_dt = max(abs(min_dt),abs(max_dt))
-        
-        minrange = -30 if min_dt-1 < -30 else min_dt
-        maxrange = 30 if max_dt+1 > 30 else max_dt
-        edges = [min_dt-1] + list(range(minrange,maxrange,2)) + [max_dt+1]
-        
-        hist,edges = np.histogram(dts,edges)
-        mean = np.mean(dts)
-        median = np.median(dts)
-        std = np.std(dts)
-        
-        
-        fig,axes = plt.subplots(2,1)
-        axes:tuple[Axes,Axes,Axes]
-        bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
-        axes[0].bar_label(bars, fontsize=20, color='navy')
-        axes[0].set_xlabel('Delay (minutes)')
-        axes[0].set_xticks(edges)
-        axes[0].set_ylabel('Frequency')
-        axes[0].set_title('Distribution of Flight Delays ({} flights considered ; {} removed)'.format(len(dts), len(self.removed_ids)))
-        axes[0].vlines(mean, ymin=0, ymax=max(hist), colors='k', linestyles='dashed', label='Mean: {:.2f} min'.format(mean))
-        axes[0].vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
-        axes[0].vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
-        axes[0].legend()
-        
-        
-        # Lollipop plot
-        cmap = plt.get_cmap('coolwarm')
-        colors = cmap((1+dts/abs_max_dt)/2)
-        
-        arriving_colors = cmap((1+np.array(arriving_dts)/abs_max_dt)/2)
-        departing_colors = cmap((1+np.array(departing_dts)/abs_max_dt)/2)
-        
-        axes[1].vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
-        axes[1].scatter(arriving_ends,arriving_dts, marker='o', c=arriving_colors, edgecolors='k', label='Arriving')
-        axes[1].scatter(departing_ends,departing_dts, marker='s', c=departing_colors, edgecolors='k', label='Departing')
-        axes[1].scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), marker='o', c='k', edgecolors='k', label='Removed (Arriving)', zorder=0.6)
-        axes[1].scatter(removed_departing_time,np.zeros(len(removed_departing_time)), marker='s', c='k', edgecolors='k', label='Removed (Departing)', zorder=0.6)
-        
-        xlims = axes[1].get_xlim()
-        
-        # Aircraft count plot
-        twinax = axes[1].twinx()
-        times,counts = count_aircraft_in_flight(self.tasklist,pd.Timedelta(minutes=60),pd.Timedelta(minutes=1))
-        twinax.plot(times,counts,color='k')
-        twinax.set_xlim(xlims)
-        twinax.set_ylabel('Aircraft count')
-        twinax.legend()
-        
-        axes[1].hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
-        axes[1].set_xlabel('Time')
-        axes[1].set_ylabel('Delay (minutes)')
-        axes[1].set_title('Flight Delays Over Time')
-        axes[1].grid(True,axis='y')
-        axes[1].legend()
-        
-        
-        
-        
-        
-        plt.show()
-        
-
+            return None        
 
 #################### Entrypoint ####################
 
@@ -1067,12 +951,12 @@ def main():
                         help="Number of threads to be used by the solver. 0 allows it to autoselect. Default to 0.",default=0)
     parser.add_argument('--profile',dest="profile",action='store_true',
                         help="If set, profile the simulation and print the results at the end. Default to False.",default=False)
-    parser.add_argument('--traffic-output',type=pathlib.Path,
-                        help="Write simulated aircraft states to this parquet file.",default=None)
+    parser.add_argument('--data-output',type=pathlib.Path,default=None,dest="data_output",
+                        help="Write simulation data to this folder (created if missing). Two files per period will be created: a parquet file for the traffic data and a Python pickle file for the task data and used arguments.")
     parser.add_argument('-ui',dest="set_ui",action='store_true',
                         help="If set, display the simulation UI.")
     args = parser.parse_args()
-
+    
     solver = args.solver
     print("===== Parsing traffic... =====\n")
     if args.data is None:
@@ -1150,8 +1034,7 @@ def main():
                                 pd.Timedelta(f"{args.time_threshold} minute"),
                                 pd.Timedelta(f"{args.final_time} minute"),
                                 max_reschedule=args.max_reschedule,
-                                separation=args.mdist,
-                                traffic_log_path=args.traffic_output)
+                                separation=args.mdist)
         
         sim.timedistance = args.tdist
         sim.lookahead_time = pd.Timedelta(minutes=args.lookahead)
@@ -1187,7 +1070,16 @@ def main():
             print("Profiling simulation...")
             cProfile.runctx('sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)', globals(), locals(),filename='simulation_profile.prof')
         else:
-            sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)
+            task_results = sim.simulate(pd.Timedelta(f"{args.timestep} minute"), args.threads)
+            if args.data_output is not None:
+                data_output = pathlib.Path(args.data_output)
+                data_output.mkdir(parents=True,exist_ok=True)
+                
+                sim.write_traffic_log(data_output/f"simulated_traffic_{'-'.join(args.ICAOs)}_{traffic.data['timestamp'].min().strftime('%Y%m%d_%H%M')}_{traffic.data['timestamp'].max().strftime('%Y%m%d_%H%M')}.parquet")
+                summary = SimulationSummary(task_results,args)
+                summary_path = data_output/f"simulation_summary_{traffic.data['timestamp'].min().strftime('%Y%m%d_%H%M')}_{traffic.data['timestamp'].max().strftime('%Y%m%d_%H%M')}.pkl"
+                with open(summary_path,'wb') as f:
+                    pickle.dump(summary,f)
         
         end_time = time()
         print(f"Simulation time: {end_time - start_time:.2f} seconds. Called solver {sim.schedules_count} times.")
