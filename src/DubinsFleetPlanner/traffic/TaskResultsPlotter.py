@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
 from .FlightExtraction import FlightEndpoints
-from .TrafficPlotter import count_aircraft_in_flight
 
 
 #################### Simulation summary ####################
@@ -22,6 +21,34 @@ from .TrafficPlotter import count_aircraft_in_flight
 class SimulationSummary:
     tasks:list[FlightEndpoints]
     command_args:Namespace
+
+def count_aircraft_in_flight(tasks:list[FlightEndpoints], time_window:pd.Timedelta, time_step:pd.Timedelta) -> tuple[list[pd.Timestamp],list[int]]:
+    tasks.sort(key=lambda t : t.end_time)
+    
+    curr_t = min(t.start_time for t in tasks)
+    end_t = max(t.end_time for t in tasks)
+    
+    
+    times = []
+    counts = []
+    
+    while curr_t < end_t:
+        count = 0
+        window_start = curr_t - time_window
+        for t in tasks:
+            if t.start_time < window_start:
+                continue
+            else:
+                if t.end_time < curr_t:
+                    count+=1
+                else: # Sorted by end time
+                    break
+        
+        times.append(curr_t)
+        counts.append(count)
+        curr_t += time_step
+        
+    return times,counts
 
 
 def plot_endpoints_results(tasks:list[FlightEndpoints]):

@@ -69,7 +69,7 @@ def filter_traffic(traffic:Traffic,ICAO_set:typing.Iterable[str]|Airports,maxdis
         flight.data['departing_airport'] = departing.icao if departing is not None else None
         return landing is not None or departing is not None
 
-    good_traffic = traffic.assign_id().pipe(filter_fun).eval(thread_count())
+    good_traffic = traffic.assign_id().pipe(filter_fun).eval(1)#thread_count()) #type: ignore
     if good_traffic is None or len(good_traffic) == 0:
         return None
     

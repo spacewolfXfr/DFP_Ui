@@ -212,7 +212,7 @@ class ArrivalsSimulator:
             self.__traffic_log.append({
                 "timestamp": timestamp,
                 "icao24": task.icao24,
-                "callsign": f"SIM{stats.id}",
+                "callsign": task.callsign,
                 "latitude": latlon.latitude,
                 "longitude": latlon.longitude,
                 "altitude": latlon.altitude,

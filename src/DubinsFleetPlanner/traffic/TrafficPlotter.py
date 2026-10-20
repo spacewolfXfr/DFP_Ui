@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import typing
+import pickle
 
 import numpy as np
 
@@ -22,11 +23,11 @@ from traffic.data import samples
 
 from cartopy import crs as ccrs
 
-from DubinsFleetPlanner.ioUtils import ACStats
-
 from .FlightExtraction import generate_flightEndpoints,generate_both_flightEndpoints,NM_TO_METERS,FlightEndpoints
 from .TrafficReader import filter_traffic,iter_flight_by_period
 from .AirportHelpers import get_airports,Airports
+from .TaskResultsPlotter import SimulationSummary
+
 from DubinsFleetPlanner.UI.plotting import ColorType
 
 
@@ -66,41 +67,13 @@ def make_colordict(tasks:list[FlightEndpoints], colormap:str|typing.Callable[[fl
     colordict_counter = i
     return runway_dict, id_dict
 
-def count_aircraft_in_flight(tasks:list[FlightEndpoints], time_window:pd.Timedelta, time_step:pd.Timedelta) -> tuple[list[pd.Timestamp],list[int]]:
-    tasks.sort(key=lambda t : t.end_time)
-    
-    curr_t = min(t.start_time for t in tasks)
-    end_t = max(t.end_time for t in tasks)
-    
-    
-    times = []
-    counts = []
-    
-    while curr_t < end_t:
-        count = 0
-        window_start = curr_t - time_window
-        for t in tasks:
-            if t.start_time < window_start:
-                continue
-            else:
-                if t.end_time < curr_t:
-                    count+=1
-                else: # Sorted by end time
-                    break
-        
-        times.append(curr_t)
-        counts.append(count)
-        curr_t += time_step
-        
-    return times,counts
-
 
 #################### Plotting ####################
 
 def animate(airports:Airports, traffic:Traffic, speedup:float=60,
             trace_size:int=50, expected_speed:float=200,
             threshold_shift:float=20, show:bool=True,
-            colordict:dict[tuple[str,str,bool],ColorType]|None=None) -> FuncAnimation:
+            colordict:dict[tuple[str,str,bool],ColorType]=dict()) -> tuple[FuncAnimation,dict[tuple[str,str,bool],ColorType]]:
     """Animate traffic data with ``speedup`` times the source time scale.
 
     ``speedup=60`` means that one minute of source data takes one second to
@@ -131,26 +104,26 @@ def animate(airports:Airports, traffic:Traffic, speedup:float=60,
     ax = plt.axes(projection=ccrs.PlateCarree())
     cmap = cm["tab10"]
     flights = list(traffic)
+    default_color = (0.2,0.2,0.2,0.5)
+    plotnames = ('Start','End','Sim start', 'Sim end')
+    markers = ('o','x','s','d')
+    linestyles = ('-','-',':',':')
+    shifts = (expected_speed/60,expected_speed/60,expected_speed/60,expected_speed/60)
     
     endpoints = generate_both_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None)
     
     colordict, id_colordict = make_colordict([e[1] for e in endpoints.values() if e[1] is not None],existing=colordict)
 
-    for flight_index, flight in enumerate(flights):
-        color = colors.get(str(flight.icao24), (0.2, 0.2, 0.2, 0.5))
+    for _, flight in enumerate(flights):
+        color = id_colordict.get(str(flight.flight_id), default_color)
         flight.plot(ax, color=color, alpha=0.25)
-        stats = ACStats(
-            flight_index,
-            expected_speed / 60,
-            1.,
-            expected_speed / (60 * np.pi),
-        )
-        if endpoints is not None:
-            points = [endpoints[0].start, endpoints[0].end]
-            if endpoints[1] is not None:
-                points.append(endpoints[1].end)
-            for point, marker, shift in zip(points, ("o", "x", "s"),
-                                            (expected_speed / 60, expected_speed / 60, threshold_shift)):
+        endpts = endpoints.get(str(flight.flight_id),None)
+        if endpts is not None:
+            points = [endpts[0].start, endpts[0].end]
+            if endpts[1] is not None:
+                points.append(endpts[1].start)
+                points.append(endpts[1].end)
+            for point, marker, shift in zip(points, markers,shifts):
                 ax.scatter([point.longitude], [point.latitude], s=10, color=color, marker=marker)
                 projected = destination(point.latitude, point.longitude, point.bearing, shift * NM_TO_METERS)
                 ax.plot([point.longitude, projected[1]], [point.latitude, projected[0]], color=color, linestyle=":" if marker == "s" else "-")
@@ -194,9 +167,9 @@ def animate(airports:Airports, traffic:Traffic, speedup:float=60,
     animation = FuncAnimation(fig, update, frames=len(timestamps), interval=interval_ms, blit=False, repeat=False)
     if show:
         plt.show()
-    return animation
+    return animation,colordict
 
-def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold_shift:float=20, colordict:dict[tuple[str,str,bool],ColorType]|None=None) -> dict[tuple[str,str,bool],ColorType]:
+def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints:dict[str,FlightEndpoints]|None=None, colordict:dict[tuple[str,str,bool],ColorType]=dict()) -> dict[tuple[str,str,bool],ColorType]:
     fig = plt.figure(figsize=(10, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
     
@@ -210,37 +183,34 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
     linestyles = ('-','-',':',':')
     shifts = (expected_speed/60,expected_speed/60,expected_speed/60,expected_speed/60)
     
-    endpoints = generate_both_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None)
+    if endpoints is None:
+        endpoints = generate_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None,True)
     
-    colordict, id_colordict = make_colordict([e[0] for e in endpoints.values()],existing=colordict)
+    colordict, id_colordict = make_colordict(list(endpoints.values()),existing=colordict)
         
     for flight in traffic:
         if flight.flight_id is None:
             continue
         assert isinstance(flight.flight_id,str)
     
-        try:
-            r = endpoints[flight.flight_id]
-            color = id_colordict[flight.flight_id]
-        except KeyError:    
-            flight.plot(ax,c=default_color,alpha=0.3)
-            continue
+        # try:
+        r = endpoints[flight.flight_id]
+        color = id_colordict[flight.flight_id]
+        # except KeyError:    
+            # flight.plot(ax,c=default_color,alpha=0.3)
+            # continue
         
                 
             
         flight.plot(ax,color=color,alpha=0.3)
-        start       = r[0].start
-        end         = r[0].end
+        start       = r.start
+        end         = r.end
         pts = [start,end]
-        if r[1] is not None:
-            pts.append(r[1].start)
-            pts.append(r[1].end)
         
         for p,m,ls,dp,n in zip(pts,markers,linestyles,shifts,plotnames):
             ax.scatter(
                 [p.longitude],[p.latitude],s=10,color=color,marker=m
             )
-            
             
             try:
                 e = destination(p.latitude,p.longitude,p.bearing,dp * NM_TO_METERS)
@@ -263,6 +233,7 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, threshold
     for m,ls,n in zip(markers,linestyles,plotnames):
         ax.plot([],[],marker=m,linestyle=ls,label=n,color=(0.2,0.2,0.2,0.5))
     
+    ax.set_title("Traffic plot for {} flights".format(len(traffic)))
     ax.legend()
     fig.tight_layout()
     plt.show()
@@ -280,6 +251,7 @@ def main():
     parser.add_argument('dataset',help="Path to a traffic dataset in parquet format.")
     parser.add_argument('ICAOs',nargs='+',
                             help="List of ICAO codes for airports in which to look for landings in the given dataset")
+    parser.add_argument('-e','--endpoints',help='Pickle path of the companion summary files (for simulated data), containg endpoints information.',default=None)
     parser.add_argument('-f','--freq-str',dest='freq_str',default='2h',
                         help="Frequency string for grouping the data (e.g., 'D' for daily, 'W' for weekly). Full details at https://pandas.pydata.org/docs/user_guide/timeseries.html#timeseries-offset-aliases")
     parser.add_argument('-a','--animate',action='store_true',help="Animate the traffic data instead of plotting it.")
@@ -308,7 +280,16 @@ def main():
         print("ERROR: Dataset path is not a file")
         exit(1)
     traffic_gen = iter_flight_by_period(args.dataset, freq_str=args.freq_str)
-    colordict = None
+    
+    if args.endpoints is not None:
+        with open(args.endpoints, 'rb') as f:
+            summary = pickle.load(f)
+            assert isinstance(summary, SimulationSummary), f"The summary file {args.endpoints} is not a SimulationSummary"
+            endpoints = {t.flight_id:t for t in summary.tasks}
+    else:
+        endpoints = None
+    
+    colordict = dict()
     for traffic in traffic_gen:
         print(f"Processing traffic from {traffic.data['timestamp'].min()} to {traffic.data['timestamp'].max()}")
         filtered_traffic = filter_traffic(traffic,airports)
@@ -318,7 +299,7 @@ def main():
         if args.animate:
             _, colordict = animate(airports, filtered_traffic, colordict=colordict)
         else:
-            colordict = plot(airports, filtered_traffic, colordict=colordict)
+            colordict = plot(airports, filtered_traffic, endpoints=endpoints, colordict=colordict)
 
 
 if __name__ == '__main__':

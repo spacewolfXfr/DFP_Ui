@@ -176,6 +176,7 @@ class FlightEndpoints:
     initial_end_time:pd.Timestamp
     flight_id:str
     icao24:str
+    callsign:str
     stats:ACStats   # Speed is expected in NM / minute, turn radius in NM
     departing:bool  # If true, the aircraft is leaving. Otherwise, it is landing
     start_airport:Optional[Airport] = None
@@ -219,6 +220,7 @@ class FlightEndpoints:
             self.initial_end_time,
             self.flight_id,
             self.icao24,
+            self.callsign,
             self.stats,
             self.departing,
             self.start_airport,
@@ -416,7 +418,9 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         flight_datapoint_to_pose(last_dpt),
         last_dpt["timestamp"],
         last_dpt["timestamp"],
-        flight.flight_id,str(flight.icao24) if flight.icao24 is not None else "Unknown",
+        flight.flight_id,
+        str(flight.icao24) if flight.icao24 is not None else "Unknown",
+        str(flight.callsign) if flight.callsign is not None else "Unknown",
         stats, departing,
         start_airport,start_runway_name,
         dest_airport,dest_runway if dest_runway is not None else "Unknown",
@@ -439,8 +443,9 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 LatlonPose(rw_proj[0],rw_proj[1],fix_dpt["altitude"],rw_proj[2]),
                 fix_dpt["timestamp"],
                 fix_dpt["timestamp"],
-                str(flight.icao24) if flight.icao24 is not None else "Unknown",
                 flight.flight_id,
+                str(flight.icao24) if flight.icao24 is not None else "Unknown",
+                str(flight.callsign) if flight.callsign is not None else "Unknown",
                 stats, departing,
                 start_airport,start_runway_name,
                 dest_airport,fix_dpt["ILS"])
@@ -460,6 +465,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 fix_dpt["timestamp"],
                 flight.flight_id,
                 str(flight.icao24) if flight.icao24 is not None else "Unknown",
+                str(flight.callsign) if flight.callsign is not None else "Unknown",
                 stats, departing,
                 start_airport,start_runway_name,
                 dest_airport,"Unknown")
