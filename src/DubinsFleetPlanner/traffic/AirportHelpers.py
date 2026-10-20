@@ -3,8 +3,6 @@ from __future__ import annotations
 import typing
 import dataclasses
 
-import numpy as np
-
 import pyproj
 from pyproj import Transformer
 from pyproj.aoi import AreaOfInterest
@@ -15,7 +13,6 @@ from traffic.data import airports
 from traffic.data.basic.airports import Airports
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 from cartes.crs import UTM,Lambert93
 
 NM_TO_METERS = 1852

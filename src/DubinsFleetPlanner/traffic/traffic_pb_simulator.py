@@ -23,9 +23,8 @@ from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from matplotlib.text import Text
 from matplotlib.patches import Circle
+from matplotlib.ticker import FuncFormatter
 from matplotlib import colormaps as cm
-
-Colortype = tuple[float,float,float,float]
 
 import pandas as pd
 
@@ -40,14 +39,12 @@ from DubinsFleetPlanner.SpeedProfile import SpeedProfile,min_tdist
 
 from pyproj import Transformer
 
-from pitot.geodesy import distance
-
-
 from .AirportHelpers import NM_TO_METERS, InfluenceCircle, get_airports, get_airport_latlon_transformer,get_other_runway_name,get_runway
-from .FlightExtraction import FlightEndpoints,LatlonPose,extract_flight_endpoints
-from .TrafficReader import iter_flightdata_by_day,filter_traffic
+from .FlightExtraction import FlightEndpoints,LatlonPose,generate_flightEndpoints
+from .TrafficReader import iter_flight_by_period,filter_traffic
+from .TrafficPlotter import make_colordict,count_aircraft_in_flight
 
-from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,transpose_list_of_trajectories
+from DubinsFleetPlanner.UI.plotting import plot_pose2d_sequence,ColorType
 
 #################### Utility ####################
 
@@ -110,8 +107,8 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
         cmd.append('--tdist')
     
     # cmd.append('--samples')
-    # cmd.append('9')
-    # 
+    # cmd.append('5')
+    
     # cmd.append('--ellipse')
     # cmd.append('0.5')
     # cmd.append('0.7')
@@ -184,6 +181,8 @@ class ArrivalsSimulator:
     line_buffersize:int = 10 # Number of past points kept in visualisation
     __schedules_count:int = 0 # Number of calls to the solver
     timedistance:bool = False # If True, interpret separation as time-based separation (in minutes, to be multiplied by the speed of the aircraft). If False, interpret separation as distance-based separation (in NM).
+    traffic_log_path:Optional[pathlib.Path] = None
+    __traffic_log:list[dict[str,typing.Any]] = dataclasses.field(default_factory=list,init=False,repr=False)
     
     ## Timekeeping
     __last_global_schedule:pd.Timestamp     = dataclasses.field(init=False)
@@ -200,13 +199,39 @@ class ArrivalsSimulator:
     __traj_dict:dict[int,Line2D]    = dataclasses.field(default_factory=dict,init=False)
     __quiver_dict:dict[int,Quiver]  = dataclasses.field(default_factory=dict,init=False)
     __dest_dict:dict[tuple[str,str],Line2D]    = dataclasses.field(default_factory=dict,init=False)
-    __color_dict:dict[int,Colortype]= dataclasses.field(default_factory=dict,init=False)
+    __color_dict:dict[int,ColorType]= dataclasses.field(default_factory=dict,init=False)
     __label_dict:dict[int,Text]     = dataclasses.field(default_factory=dict,init=False)
     __min_dist_line:typing.Optional[Line2D] = dataclasses.field(default=None,init=False)
     
     @property
     def schedules_count(self) -> int:
         return self.__schedules_count    
+
+    def __log_traffic_states(self, states:list[tuple[ACStats,Pose3D,float]], timestamp:pd.Timestamp) -> None:
+        if self.traffic_log_path is None:
+            return
+
+        for stats, pose, speed in states:
+            latlon = LatlonPose.from_pose3D(pose, self.transformer, from_NM=True)
+            self.__traffic_log.append({
+                "timestamp": timestamp,
+                "icao24": str(stats.id),
+                "callsign": f"SIM{stats.id}",
+                "latitude": latlon.latitude,
+                "longitude": latlon.longitude,
+                "altitude": latlon.altitude,
+                "groundspeed": speed * 60,
+                "track": latlon.bearing,
+                "flight_id": str(stats.id),
+            })
+
+    def write_traffic_log(self) -> Optional[Traffic]:
+        if self.traffic_log_path is None:
+            return None
+
+        traffic = Traffic(pd.DataFrame(self.__traffic_log))
+        traffic.to_parquet(self.traffic_log_path)
+        return traffic
     
     tempdir = tempfile.gettempdir()
     now = datetime.datetime.now()
@@ -226,6 +251,7 @@ class ArrivalsSimulator:
         self.__encountered_exception = None
         self.__last_schedules = dict()
         self.__schedules_count = 0
+        self.__traffic_log = []
         
         self.__axes = None
         
@@ -361,12 +387,14 @@ class ArrivalsSimulator:
                 else:
                     if t1.planned:
                         self.removed_ids.add(ac2)
+                        t2.end_time = self.__t
                         if self.scheduled is not None:
                             del self.scheduled.trajectories[ac2]
                             self.__remove_from_axes(ac2)
                         print(f"Removing {ac2} from the simulation")
                     else:
                         self.removed_ids.add(ac1)
+                        t1.end_time = self.__t
                         if self.scheduled is not None:
                             del self.scheduled.trajectories[ac1]
                             self.__remove_from_axes(ac1)
@@ -600,6 +628,7 @@ class ArrivalsSimulator:
         while self.__t < self.__end_of_times:
             try:
                 states,success_schedule = self.step(timestep,threads)
+                self.__log_traffic_states(states, self.__t)
                 # log.append((self.__t,states))
                 # if self.__encountered_exception is not None:
                     # break
@@ -608,37 +637,24 @@ class ArrivalsSimulator:
                 break
             
         plt.ioff()
-        self.report()
+        self.write_traffic_log()
+        try:
+            self.report()
+        except Exception as e:
+            print("Could not produce report: ",e)
         
     #################### Plotting ####################
         
-    def attach_axes(self,ax:Axes,set_xylims:bool=True):
+    def attach_axes(self,ax:Axes,set_xylims:bool=True,runways_dict:dict[tuple[str,str,bool],ColorType]=dict()):
         self.__axes = ax
         self.__min_dist_line = ax.plot([],[],marker='D',linestyle=':',label=f"Min distance (-,-) : - NM",
                                        markeredgecolor='r',color='k')[0]
         
         # Setting up colors by destination
-        icao_rw_colordict = dict()
-        my_cm = cm["tab10"]
-        i = 0
+        
+        runways_dict,self.flight_id_dict = make_colordict(self.tasklist,'tab10',10,runways_dict)   
         for t in self.tasklist:
-            if not t.departing:
-                try:
-                    color = icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")]
-                except KeyError:
-                    color = my_cm(i/10)
-                    i+=1
-                    icao_rw_colordict[(t.dest_ICAO,t.dest_runway + " (arriving)")] = color
-            else:
-                try:
-                    color = icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")]
-                except KeyError:
-                    color = my_cm(i/10)
-                    i+=1
-                    icao_rw_colordict[(t.start_ICAO,t.start_runway + " (departing)")] = color
-                    
-            self.__color_dict[t.id] = color
-                
+            self.__color_dict[t.id] = self.flight_id_dict[t.flight_id]
         
         maxx = -np.inf
         maxy = -np.inf
@@ -743,33 +759,40 @@ class ArrivalsSimulator:
         
         self.__axes.legend()
         
+        return runways_dict
+        
     def __remove_from_axes(self,ac_id:int):    
         try:
             self.__pos_dict[ac_id].set_visible(False)
+            self.__pos_dict[ac_id].remove()
             del self.__pos_dict[ac_id]
         except KeyError:
             pass
         
         try:
             self.__line_dict[ac_id].set_visible(False)
+            self.__line_dict[ac_id].remove()
             del self.__line_dict[ac_id]
         except KeyError:
             pass
         
         try:
             self.__quiver_dict[ac_id].set_visible(False)
+            self.__quiver_dict[ac_id].remove()
             del self.__quiver_dict[ac_id]
         except KeyError:
             pass
         
         try:
             self.__label_dict[ac_id].set_visible(False)
+            self.__label_dict[ac_id].remove()
             del self.__label_dict[ac_id]
         except KeyError:
             pass
         
         try:
             self.__traj_dict[ac_id].set_visible(False)
+            self.__traj_dict[ac_id].remove()
             del self.__traj_dict[ac_id]
         except KeyError:
             pass
@@ -796,6 +819,7 @@ class ArrivalsSimulator:
             ## Clean trajs 
             try:
                 self.__traj_dict[s.id].set_visible(False)
+                self.__traj_dict[s.id].remove()
                 del self.__traj_dict[s.id]
             except KeyError:
                 pass
@@ -889,18 +913,38 @@ class ArrivalsSimulator:
         else:
             return None
     
-        
+    
     def report(self):
-        dts = []
-        ends = []
+        arriving_dts = []
+        departing_dts = []
+        arriving_ends = []
+        departing_ends = []
+        removed_arriving_time = []
+        removed_departing_time = []
         for task in self.tasklist:
             # Consider only tasks ended and not removed due to loss of separation
-            if task.end_time < self.__t and task.stats.id not in self.removed_ids:
-                dts.append((task.end_time - task.initial_end_time).total_seconds()/60)
-                ends.append(task.end_time)
+            if task.id in self.removed_ids:
+                if task.departing:
+                    removed_departing_time.append(task.end_time)
+                else:
+                    removed_arriving_time.append(task.end_time)
+            elif task.end_time < self.__t:
+                dt = (task.end_time - task.initial_end_time).total_seconds()/60
+                if task.departing:
+                    departing_dts.append(dt)
+                    departing_ends.append(task.end_time)
+                else:
+                    arriving_dts.append(dt)
+                    arriving_ends.append(task.end_time)
+                
+
+        dts = np.array(arriving_dts+departing_dts)
+        ends = np.array(arriving_ends+departing_ends)
         
-        dts = np.array(dts)
-        ends = np.array(ends)
+        if len(dts) == 0 or len(ends) == 0:
+            print("WARNING: No data collected, cannot produce report")
+            return
+        
         min_dt = int(np.floor(np.min(dts)))
         max_dt = int(np.ceil(np.max(dts)))
         abs_max_dt = max(abs(min_dt),abs(max_dt))
@@ -914,11 +958,9 @@ class ArrivalsSimulator:
         median = np.median(dts)
         std = np.std(dts)
         
-        cmap = plt.get_cmap('coolwarm')
-        colors = cmap((1+dts/abs_max_dt)/2)
         
         fig,axes = plt.subplots(2,1)
-        axes:tuple[Axes,Axes]
+        axes:tuple[Axes,Axes,Axes]
         bars = axes[0].bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
         axes[0].bar_label(bars, fontsize=20, color='navy')
         axes[0].set_xlabel('Delay (minutes)')
@@ -931,17 +973,39 @@ class ArrivalsSimulator:
         axes[0].legend()
         
         
-        
         # Lollipop plot
+        cmap = plt.get_cmap('coolwarm')
+        colors = cmap((1+dts/abs_max_dt)/2)
+        
+        arriving_colors = cmap((1+np.array(arriving_dts)/abs_max_dt)/2)
+        departing_colors = cmap((1+np.array(departing_dts)/abs_max_dt)/2)
+        
         axes[1].vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
-        axes[1].scatter(ends, dts, c=colors, edgecolors='k')
+        axes[1].scatter(arriving_ends,arriving_dts, marker='o', c=arriving_colors, edgecolors='k', label='Arriving')
+        axes[1].scatter(departing_ends,departing_dts, marker='s', c=departing_colors, edgecolors='k', label='Departing')
+        axes[1].scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), marker='o', c='k', edgecolors='k', label='Removed (Arriving)', zorder=0.6)
+        axes[1].scatter(removed_departing_time,np.zeros(len(removed_departing_time)), marker='s', c='k', edgecolors='k', label='Removed (Departing)', zorder=0.6)
         
         xlims = axes[1].get_xlim()
+        
+        # Aircraft count plot
+        twinax = axes[1].twinx()
+        times,counts = count_aircraft_in_flight(self.tasklist,pd.Timedelta(minutes=60),pd.Timedelta(minutes=1))
+        twinax.plot(times,counts,color='k')
+        twinax.set_xlim(xlims)
+        twinax.set_ylabel('Aircraft count')
+        twinax.legend()
+        
         axes[1].hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
-        axes[1].set_xlabel('End Time')
+        axes[1].set_xlabel('Time')
         axes[1].set_ylabel('Delay (minutes)')
         axes[1].set_title('Flight Delays Over Time')
         axes[1].grid(True,axis='y')
+        axes[1].legend()
+        
+        
+        
+        
         
         plt.show()
         
@@ -969,6 +1033,8 @@ def main():
     #                     default=(0,0))
     parser.add_argument('--tdist',dest='tdist',action='store_true',help='If set, interpret mdist as time-based separation (in minutes). Default to False.',default=False)
     parser.add_argument('--data',help='A Traffic-compatible data file. If not set, use the sample dataset of Traffic',default=None)
+    parser.add_argument('--period',help="Period duration for splitting the input data into subproblems (e.g., 'D' for daily, 'W' for weekly). Full details at https://pandas.pydata.org/docs/user_guide/timeseries.html#timeseries-offset-aliases.",
+                        default='D')
     parser.add_argument('--ICAOs',nargs='+',
                         help="List of ICAO codes for airports in which to look for landings in the given dataset. Default to LFPO,LFPG,LFPB",
                         default=["LFPO","LFPG","LFPB"])
@@ -1001,6 +1067,8 @@ def main():
                         help="Number of threads to be used by the solver. 0 allows it to autoselect. Default to 0.",default=0)
     parser.add_argument('--profile',dest="profile",action='store_true',
                         help="If set, profile the simulation and print the results at the end. Default to False.",default=False)
+    parser.add_argument('--traffic-output',type=pathlib.Path,
+                        help="Write simulated aircraft states to this parquet file.",default=None)
     parser.add_argument('-ui',dest="set_ui",action='store_true',
                         help="If set, display the simulation UI.")
     args = parser.parse_args()
@@ -1010,7 +1078,7 @@ def main():
     if args.data is None:
         traffic_iter = [samples.quickstart]
     else:
-        traffic_iter = iter_flightdata_by_day(args.data,id_column='flight_id')
+        traffic_iter = iter_flight_by_period(args.data,'2h',id_column='flight_id')
         if traffic_iter is None:
             print("ERROR: Importing traffic failed. Exiting")
             exit(1)
@@ -1046,13 +1114,15 @@ def main():
             outgoing_circle = InfluenceCircle.from_xy_meters(avgx,avgy,args.departing_radius*NM_TO_METERS,transformer)
         else:
             outgoing_circle = influence_circle
-       
+    
+    ## Plotting 
+    runway_colordict = dict()
 
     for traffic in traffic_iter:
-        print(f"Processing traffic for day {traffic.data['timestamp'].min().date()}")
+        print(f"Processing traffic from {traffic.data['timestamp'].min()} to {traffic.data['timestamp'].max()}")
         filtered_traffic = filter_traffic(traffic,airports)
         if filtered_traffic is None:
-            print("No flights found for the given ICAO codes. Skipping to next day.")
+            print("No flights found for the given ICAO codes. Skipping to next period.")
             continue
         print(filtered_traffic)
         print(f"Total flights to process: {len(filtered_traffic.flight_ids)}")
@@ -1064,7 +1134,7 @@ def main():
             fig.tight_layout()
             plt.show()
         
-        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_landing_speed, expected_departing_speed, filtered_traffic, args.cspeed, outgoing_circle)
+        endpoints:dict[str,FlightEndpoints] = generate_flightEndpoints(airports, expected_landing_speed, expected_departing_speed, filtered_traffic, args.cspeed, outgoing_circle)
         print(f"Total flight endpoints generated: {len(endpoints)}")
         # for ep in endpoints:
             # ax.scatter(ep.start.to_pose3D(transformer,True).x,ep.start.to_pose3D(transformer,True).y,marker='o',color='k',alpha=0.2)
@@ -1081,9 +1151,7 @@ def main():
                                 pd.Timedelta(f"{args.final_time} minute"),
                                 max_reschedule=args.max_reschedule,
                                 separation=args.mdist,
-                                wind_x=0.,#float(args.wind[0]),
-                                wind_y=0.,#float(args.wind[1]))
-        )
+                                traffic_log_path=args.traffic_output)
         
         sim.timedistance = args.tdist
         sim.lookahead_time = pd.Timedelta(minutes=args.lookahead)
@@ -1105,28 +1173,13 @@ def main():
                         Circle((xbis,ybis),radius=outgoing_circle.radius,fill=False,linestyle='--',color='g',label=f"Departing radius ({outgoing_circle.radius:.1f} NM)")
                     )
         
-        # try:
-        #     b = float(args.border)
-            
-        #     xmin,xmax = ax.get_xlim()
-        #     ymin,ymax = ax.get_ylim()
-            
-        #     make_box_boundary_file(xmin+b,xmax-b,ymin+b,ymax-b,sim.geometric_obstacle_json_path)
-        #     ax.plot(
-        #         [xmin+b,xmin+b,xmax-b,xmax-b,xmin+b],
-        #         [ymin+b,ymax-b,ymax-b,ymin+b,ymin+b],
-        #         'k-',label='Border'
-        #     )
-        # except ValueError:
-        #     sim.geometric_obstacle_json_path = args.border
-        
         ## Run simulation ##
         
-        sim.setup_simulation(endpoints)
+        sim.setup_simulation(list(endpoints.values()))
         
         # If UI is enabled, attach the axes to the simulation
         if args.set_ui:
-            sim.attach_axes(ax)
+            runway_colordict = sim.attach_axes(ax,runways_dict=runway_colordict)
         
         start_time = time()
         
@@ -1138,56 +1191,9 @@ def main():
         
         end_time = time()
         print(f"Simulation time: {end_time - start_time:.2f} seconds. Called solver {sim.schedules_count} times.")
-        cont = input("Enter 'y' to restart simulation with the next day data, quit otherwise: ")
+        cont = input("Enter 'y' to start simulation with the next period, quit otherwise: ")
         if cont != 'y':
             break
-
-def __wrapped_extract_flight_endpoints(args):
-    flight, airports, expected_landing_speed, expected_departing_speed, circle, constant_speed = args
-    airports:Airports
-    
-    id = flight.flight_id.split('_')[1]
-    
-    stats = ACStats(
-                int(id),
-                expected_departing_speed/60,
-                1.,
-                expected_landing_speed/(60*np.pi), # Full circle in 2 minutes
-                expected_landing_speed/60, # Convert from kts (NM/h) to NM/minute
-            )
-    
-    
-    o = extract_flight_endpoints(flight,airports,stats,circle,constant_speed,3)
-    if o is None:
-        return None
-    else:
-        if o[1] is not None:
-            assert not(pd.isna(o[1].stats.airspeed))
-            assert not(pd.isna(o[1].stats.target_airspeed))
-            assert np.isfinite(o[1].stats.airspeed)
-            assert np.isfinite(o[1].stats.target_airspeed)
-        return o[1] if o[1] is not None else None
-
-def generate_flightEndpoints(airports:Airports, expected_landing_speed:float, expected_departing_speed:float, filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle]) -> list[FlightEndpoints]:
-    endpoints = []
-    
-    number_of_flights = filtered_traffic.flight_ids.__len__()
-        
-    args_it = zip(filtered_traffic.iterate(),
-                  itertools.repeat(airports, number_of_flights),
-                  itertools.repeat(expected_landing_speed, number_of_flights),
-                  itertools.repeat(expected_departing_speed, number_of_flights),
-                  itertools.repeat(influence_circle, number_of_flights),
-                  itertools.repeat(constant_speed, number_of_flights))
-
-    
-    
-    with ProcessPoolExecutor() as executor:
-        endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
-    
-    endpoints = [ep for ep in endpoints if ep is not None]
-    
-    return endpoints
     
 if __name__ == '__main__':
     main()

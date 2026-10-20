@@ -12,7 +12,7 @@ from .FlightExtraction import flight_landing,flight_departing
 from DubinsFleetPlanner.thread_estimator import thread_count
 
 
-def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp', id_column:str='flight_id') -> typing.Generator[Traffic, None, None]:
+def iter_flight_by_period(input_file: pathlib.Path, freq_str: str, time_column:str='timestamp', id_column:str='flight_id') -> typing.Generator[Traffic, None, None]:
     """Load from the given Parquet file the timestamps and flight ids and group them by day. Produce a generator
     yielding all columns from the Parquet file on a day by day basis (flights may start the day before or end the day after, the
     associated points are provided).
@@ -22,6 +22,7 @@ def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp'
 
     Args:
         input_file (pathlib.Path): Path to the Parquet file containing the flight data.
+        freq_str (str): Frequency string for grouping the data (e.g., 'D' for daily, 'W' for weekly). Full details at https://pandas.pydata.org/docs/user_guide/timeseries.html#timeseries-offset-aliases
         time_column (str, optional): Column name for the timestamp. Defaults to 'timestamp'.
         id_column (str, optional): Column name for the flight ID. Defaults to 'flight_id'.
 
@@ -45,7 +46,7 @@ def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp'
     min_vals['flight_id_col'] = min_vals.index
     max_vals['flight_id_col'] = max_vals.index
     
-    day_grouper = pd.Grouper(key=time_column, freq='D')
+    day_grouper = pd.Grouper(key=time_column, freq=freq_str)
     start_groups = min_vals.groupby(day_grouper,sort=True)
     end_groups = max_vals.groupby(day_grouper,sort=True)
     
@@ -56,6 +57,9 @@ def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp'
         
         yield Traffic(pd.read_parquet(input_file,filters=[(id_column, 'in', interval.index)]))
     
+def iter_flightdata_by_day(input_file: pathlib.Path, time_column:str='timestamp', id_column:str='flight_id') -> typing.Generator[Traffic, None, None]:
+    return iter_flight_by_period(input_file, freq_str='D', time_column=time_column, id_column=id_column)
+
 
 def filter_traffic(traffic:Traffic,ICAO_set:typing.Iterable[str]|Airports,maxdist:float=10000.) -> typing.Optional[Traffic]:    
     def filter_fun(flight:Flight) -> bool:
