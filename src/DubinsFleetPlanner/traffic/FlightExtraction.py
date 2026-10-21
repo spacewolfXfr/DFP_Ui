@@ -312,6 +312,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     
     flight = flight.cumulative_distance(compute_gs=True,compute_track=True).airborne() # type: ignore
     if flight is None or len(flight.data) < 2:
+        print(f"Flight {flight} has no airborne data, cannot extract endpoints.")
         return None
     flight.data['track'] = flight.data['track'].fillna(flight.data.pop('compute_track'))
     flight = Flight(flight.data.dropna(subset=["latitude","longitude","track"]))
@@ -329,13 +330,14 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
     departing = False
     
     if dest_airport is not None and dest_airport.icao in candidate_airports.data.icao.values:
-        flight.landing()
         fix_dpt = get_ils_second_aligned_datapoint(flight,dest_airport)
         fix_dpt = fix_dpt if fix_dpt is not None else get_ils_aligned_datapoint(flight,dest_airport)
         try:
-            fix_dpt = fix_dpt if fix_dpt is not None else get_any_landing_datapoint(flight)
+            if fix_dpt is None:
+                fix_dpt = get_any_landing_datapoint(flight)
         except Exception as e:
             print(f"Error extracting any landing datapoint for flight {flight}: {e}")
+
             fix_dpt = None
         # last_dpt = get_ils_last_aligned_datapoint(flight,dest_airport)
         if fix_dpt is not None:
@@ -375,12 +377,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             # dpt_proj = destination(first_dpt.latitude, first_dpt.longitude, float(start_runway_name[:2])*10, threshold_shift * NM_TO_METERS)
         # else:
         dpt_proj = destination(first_dpt.latitude, first_dpt.longitude,first_dpt.track,threshold_shift * NM_TO_METERS)
-            
-        # if abs(float(start_runway_name[:2])*10 - first_dpt.track) > 10:
-            # print(f"{flight.flight_id} start track disagreement: runway {float(start_runway_name[:2])*10} VS track {first_dpt.track}")
         
-        if (first_dpt.track < 180):
-            print(f"{flight.flight_id} goes east: runway {float(start_runway_name[:2])*10} VS track {first_dpt.track}")
         
         # By default, destination returns the bearing back to the original point. We need to correct it to keep the same direction.
         dpt_proj = dpt_proj[0], dpt_proj[1], dpt_proj[2]+180
@@ -401,6 +398,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
         try:
             first_dpt = flight.data.iloc[1]
         except IndexError:
+            print(f"Flight {flight}: could not find a valid first point.")
             return None
 
     last_dpt = flight.data.iloc[-1]
@@ -457,6 +455,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 obj_speed = stats.airspeed
                 stats.airspeed = first_dpt["groundspeed"]/60 if not pd.isna(first_dpt["groundspeed"]) else stats.target_airspeed
                 stats.target_airspeed = obj_speed
+            
             end_to_ils = FlightEndpoints(
                 flight_datapoint_to_pose(first_dpt) if dpt_proj is None else LatlonPose(dpt_proj[0],dpt_proj[1],fix_dpt["altitude"],dpt_proj[2]),
                 first_dpt["timestamp"],
@@ -494,7 +493,7 @@ def __wrapped_extract_flight_endpoints(args):
 def generate_flightEndpoints(airports:Airports, 
                              expected_landing_speed:float, expected_departing_speed:float, 
                              filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle],
-                             raw_endpoints:bool=False) -> dict[str,FlightEndpoints]:
+                             raw_endpoints:bool=False) -> list[FlightEndpoints]:
     endpoints = []
     
     number_of_flights = filtered_traffic.flight_ids.__len__()
@@ -511,16 +510,18 @@ def generate_flightEndpoints(airports:Airports,
     with ProcessPoolExecutor() as executor:
         endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
     
+    print("generate_flightEndpoints: {} endpoints generated for {} flights".format(len(endpoints), len(filtered_traffic.flight_ids)))
+    
     if raw_endpoints:
-        endpoints = {ep[0].icao24: ep[0] for ep in endpoints if ep is not None}
+        endpoints = [ep[0] for ep in endpoints if ep is not None]
     else:
-        endpoints = {ep[0].icao24: ep[1] for ep in endpoints if ep is not None and ep[1] is not None}
+        endpoints = [ep[1] for ep in endpoints if ep is not None and ep[1] is not None]
     return endpoints
 
 def generate_both_flightEndpoints(airports:Airports, 
                              expected_landing_speed:float, expected_departing_speed:float, 
                              filtered_traffic:Traffic, constant_speed:bool, influence_circle:Optional[InfluenceCircle])\
-                                 -> dict[str,tuple[FlightEndpoints,FlightEndpoints|None]]:
+                                 -> list[tuple[FlightEndpoints,FlightEndpoints|None]]:
     endpoints = []
     
     number_of_flights = filtered_traffic.flight_ids.__len__()
@@ -537,5 +538,5 @@ def generate_both_flightEndpoints(airports:Airports,
     with ProcessPoolExecutor() as executor:
         endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
     
-    endpoints = {ep[0].flight_id: ep for ep in endpoints if ep is not None}
+    endpoints = [ep for ep in endpoints if ep is not None]
     return endpoints

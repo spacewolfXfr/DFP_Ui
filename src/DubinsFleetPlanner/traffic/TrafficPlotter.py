@@ -10,7 +10,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 from matplotlib import colormaps as cm
-from matplotlib.axes import Axes
+from matplotlib.projections.geo import GeoAxes
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 
@@ -46,7 +46,7 @@ def make_colordict(tasks:list[FlightEndpoints], colormap:str|typing.Callable[[fl
         existing (dict[tuple[str,str,bool],ColorType], optional): Existing color dictionary. Defaults to dict().
 
     Returns:
-        typing.Tuple[dict[tuple[str,str,bool],ColorType],dict[str,ColorType]]: Two dictionaries: one mapping (airport, runway, behavior) to colors, and another mapping flight icao24 to colors.
+        typing.Tuple[dict[tuple[str,str,bool],ColorType],dict[str,ColorType]]: Two dictionaries: one mapping (airport, runway, behavior) to colors, and another mapping flight id (icao24 + callsign) to colors.
     """
     global colordict_counter
     runway_dict:dict[tuple[str,str,bool],ColorType] = existing
@@ -74,9 +74,9 @@ def make_colordict(tasks:list[FlightEndpoints], colormap:str|typing.Callable[[fl
                 i+=1
                 runway_dict[(t.start_ICAO,t.start_runway,True)] = color
         
-        if t.icao24 in id_dict.keys():
-            assert id_dict[t.icao24] == color
-        id_dict[t.icao24] = color
+        if t.flight_id in id_dict.keys():
+            assert id_dict[t.flight_id] == color
+        id_dict[t.flight_id] = color
     colordict_counter = i
     return runway_dict, id_dict
 
@@ -125,7 +125,7 @@ def animate(airports:Airports, traffic:Traffic, speedup:float=60,
     
     endpoints = generate_both_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None)
     
-    colordict, id_colordict = make_colordict([e[1] for e in endpoints.values() if e[1] is not None],existing=colordict)
+    colordict, id_colordict = make_colordict([e[1] for e in endpoints if e[1] is not None],existing=colordict)
 
     for _, flight in enumerate(flights):
         color = id_colordict.get(str(flight.flight_id), default_color)
@@ -182,10 +182,12 @@ def animate(airports:Airports, traffic:Traffic, speedup:float=60,
         plt.show()
     return animation,colordict
 
-def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints:dict[str,FlightEndpoints]|None=None, colordict:dict[tuple[str,str,bool],ColorType]=dict()) -> dict[tuple[str,str,bool],ColorType]:
+
+def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints:list[FlightEndpoints]|None=None, colordict:dict[tuple[str,str,bool],ColorType]=dict()) -> dict[tuple[str,str,bool],ColorType]:
     transformer = get_airport_latlon_transformer(airports[0])
     fig = plt.figure(figsize=(8, 8))
-    ax  = plt.axes(projection=ccrs.Projection(transformer.target_crs))
+    projection = ccrs.Projection(transformer.target_crs)
+    ax:GeoAxes  = plt.axes(projection=projection) # type: ignore
     
     # Setup colors for plotting
     if colordict is None:
@@ -200,26 +202,28 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints
     if endpoints is None:
         endpoints = generate_flightEndpoints(airports,expected_speed,expected_speed,traffic,True,None,True)    
     
-    colordict, id_colordict = make_colordict(list(endpoints.values()),existing=colordict)
+    colordict, id_colordict = make_colordict(endpoints,existing=colordict)
+    dict_endpoints = {e.flight_id[:6]:e for e in endpoints}
+    
+    small_id_colordict = {k[:6]:v for k,v in id_colordict.items()}
         
     for flight in traffic:
-        if flight.icao24 is None:
+        if flight.flight_id is None:
             continue
-        assert isinstance(flight.icao24,str)
-        
+        assert isinstance(flight.flight_id,str)
     
         try:
-            r = endpoints[flight.icao24]
-            color = id_colordict[flight.icao24]
+            # r = dict_endpoints[flight.flight_id[:6]]
+            color = small_id_colordict[flight.flight_id[:6]]
         except KeyError:    
             flight.plot(ax,c=default_color,alpha=0.3)
             continue
         
             
         flight.plot(ax,color=color,alpha=0.3)
-        start       = r.start
-        end         = r.end
-        pts = [start,end]
+        # start       = r.start
+        # end         = r.end
+        # pts = [start,end]
         
         # for p,m,ls,dp,n in zip(pts,markers,linestyles,shifts,plotnames):            
         #     ax.scatter(
@@ -250,10 +254,31 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints
     for m,ls,n in zip(markers,linestyles,plotnames):
         ax.plot([],[],marker=m,linestyle=ls,label=n,color=(0.2,0.2,0.2,0.5))
     
-    ax.set_title("Traffic plot for {} flights, from {} to {}".format(len(traffic), traffic[0].start_time, traffic[-1].end_time))
-    ax.set_aspect('equal', adjustable='datalim')
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
+    
+    ax.set_title("Traffic plot for {} flights, from {} to {}".format(len(traffic),
+                                                                     traffic.start_time.strftime("%Y-%m-%d %H:%M"),
+                                                                     traffic.end_time.strftime("%Y-%m-%d %H:%M" if traffic.start_time.date() != traffic.end_time.date() else "%H:%M")))
+    
+    
+    ax.set_xlim(280*NM_TO_METERS, 450*NM_TO_METERS)
+    ax.set_ylim(3010*NM_TO_METERS, 3170*NM_TO_METERS)
+    
+    min_x, max_x = ax.get_xlim()
+    min_y, max_y = ax.get_ylim()
+    
+    xticks_vals = np.linspace(min_x, max_x, num=5)
+    xticks_labels = ["{:.1f}".format(x/NM_TO_METERS) for x in xticks_vals]
+    yticks_vals = np.linspace(min_y, max_y, num=5)
+    yticks_labels = ["{:.1f}".format(y/NM_TO_METERS) for y in yticks_vals]
+
+    ax.set_xlabel(f"Easting (NM, {transformer.target_crs.name})")
+    ax.set_ylabel("Northing (NM)")
+
+    ax.set_xticks(xticks_vals)
+    ax.set_xticklabels(xticks_labels)
+    ax.set_yticks(yticks_vals)
+    ax.set_yticklabels(yticks_labels)
+    ax.set_aspect('equal')
     ax.legend()
     fig.tight_layout()
     plt.show()
@@ -305,7 +330,7 @@ def main():
         with open(args.endpoints, 'rb') as f:
             summary = pickle.load(f)
             assert isinstance(summary, SimulationSummary), f"The summary file {args.endpoints} is not a SimulationSummary"
-            endpoints = {t.icao24:t for t in summary.tasks}
+            endpoints = summary.tasks
     else:
         endpoints = None
     

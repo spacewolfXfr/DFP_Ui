@@ -196,7 +196,7 @@ class ArrivalsSimulator:
     __pos_dict:dict[int,Line2D]     = dataclasses.field(default_factory=dict,init=False)
     __traj_dict:dict[int,Line2D]    = dataclasses.field(default_factory=dict,init=False)
     __quiver_dict:dict[int,Quiver]  = dataclasses.field(default_factory=dict,init=False)
-    __dest_dict:dict[tuple[str,str],Line2D]    = dataclasses.field(default_factory=dict,init=False)
+    __dest_dict:dict[tuple[str,str,bool],Line2D]    = dataclasses.field(default_factory=dict,init=False)
     __color_dict:dict[int,ColorType]= dataclasses.field(default_factory=dict,init=False)
     __label_dict:dict[int,Text]     = dataclasses.field(default_factory=dict,init=False)
     __min_dist_line:typing.Optional[Line2D] = dataclasses.field(default=None,init=False)
@@ -644,9 +644,9 @@ class ArrivalsSimulator:
         
         # Setting up colors by destination
         
-        runways_dict,icao_id_dict = make_colordict(self.tasklist,'tab10',10,runways_dict)   
+        runways_dict,flight_id_dict = make_colordict(self.tasklist,'tab10',10,runways_dict)   
         for t in self.tasklist:
-            self.__color_dict[t.id] = icao_id_dict[t.icao24]
+            self.__color_dict[t.id] = flight_id_dict[t.flight_id]
         
         maxx = -np.inf
         maxy = -np.inf
@@ -673,7 +673,7 @@ class ArrivalsSimulator:
             color = self.__color_dict[t.id]
             if not t.departing:
                 assert t.dest_airport is not None and t.dest_ICAO is not None
-                if (t.dest_ICAO,t.dest_runway + " (arriving)") not in self.__dest_dict:
+                if (t.dest_ICAO,t.dest_runway,t.departing) not in self.__dest_dict:
                     if t.dest_runway == "Unknown":
                         dest_line = self.__axes.plot(
                                     [],[],
@@ -700,10 +700,10 @@ class ArrivalsSimulator:
                             label=f"{t.dest_ICAO} : {t.dest_runway} (arriving)"
                         )[0]
                     
-                    self.__dest_dict[(t.dest_ICAO,t.dest_runway + " (arriving)")] = dest_line
+                    self.__dest_dict[(t.dest_ICAO,t.dest_runway,t.departing)] = dest_line
             else:
                 assert t.start_airport is not None and t.start_ICAO is not None
-                if (t.start_ICAO,t.start_runway + " (departing)") not in self.__dest_dict:
+                if (t.start_ICAO,t.start_runway,t.departing) not in self.__dest_dict:
                     if t.start_runway == "Unknown":
                         dest_line = self.__axes.plot(
                                     [],[],
@@ -730,7 +730,7 @@ class ArrivalsSimulator:
                             label=f"{t.start_ICAO} : {t.start_runway} (departing)"
                         )[0]
                     
-                    self.__dest_dict[(t.start_ICAO,t.start_runway + " (departing)")] = dest_line
+                    self.__dest_dict[(t.start_ICAO,t.start_runway,t.departing)] = dest_line
         
         if set_xylims:
             self.__axes.set_xlim(minx,maxx)
@@ -1018,8 +1018,9 @@ def main():
             fig.tight_layout()
             plt.show()
         
-        endpoints:dict[str,FlightEndpoints] = generate_flightEndpoints(airports, expected_landing_speed, expected_departing_speed, filtered_traffic, args.cspeed, outgoing_circle)
+        endpoints:list[FlightEndpoints] = generate_flightEndpoints(airports, expected_landing_speed, expected_departing_speed, filtered_traffic, args.cspeed, outgoing_circle)
         print(f"Total flight endpoints generated: {len(endpoints)}")
+        number_of_flights_removed = len(filtered_traffic.flight_ids) - len(endpoints)
         # for ep in endpoints:
             # ax.scatter(ep.start.to_pose3D(transformer,True).x,ep.start.to_pose3D(transformer,True).y,marker='o',color='k',alpha=0.2)
             # ax.scatter(ep.end.to_pose3D(transformer,True).x,ep.end.to_pose3D(transformer,True).y,marker='x',color='k',alpha=0.2)
@@ -1058,7 +1059,7 @@ def main():
         
         ## Run simulation ##
         
-        sim.setup_simulation(list(endpoints.values()))
+        sim.setup_simulation(endpoints)
         
         # If UI is enabled, attach the axes to the simulation
         if args.set_ui:
@@ -1083,6 +1084,7 @@ def main():
         
         end_time = time()
         print(f"Simulation time: {end_time - start_time:.2f} seconds. Called solver {sim.schedules_count} times.")
+        print(f"Handled {len(endpoints)} flights, {number_of_flights_removed} removed (from an initial total of {len(filtered_traffic.flight_ids)}).")
         cont = input("Enter 'y' to start simulation with the next period, quit otherwise: ")
         if cont != 'y':
             break

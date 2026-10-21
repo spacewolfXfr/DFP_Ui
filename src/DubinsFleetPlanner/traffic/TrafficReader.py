@@ -46,14 +46,30 @@ def iter_flight_by_period(input_file: pathlib.Path, freq_str: str, time_column:s
     min_vals['flight_id_col'] = min_vals.index
     max_vals['flight_id_col'] = max_vals.index
     
-    day_grouper = pd.Grouper(key=time_column, freq=freq_str)
-    start_groups = min_vals.groupby(day_grouper,sort=True)
-    end_groups = max_vals.groupby(day_grouper,sort=True)
+    grouper = pd.Grouper(key=time_column, freq=freq_str)
+    start_groups = min_vals.groupby(grouper,sort=True)
+    end_groups = max_vals.groupby(grouper,sort=True)
+    increasing_keys = sorted(set(start_groups.groups.keys()).union(set(end_groups.groups.keys())))
     
-    for key in start_groups.groups.keys():
-        starting = start_groups.get_group(key)
-        ending = end_groups.get_group(key)
-        interval = starting.merge(ending, on=id_column, how='outer', suffixes=('_start', '_end')).drop(columns=['flight_id_col_start', 'flight_id_col_end'])
+    for key in increasing_keys:
+        try:
+            starting = start_groups.get_group(key)
+        except KeyError:
+            starting = None
+        try:
+            ending = end_groups.get_group(key)
+        except KeyError:
+            ending = None
+        
+        if starting is None and ending is None:
+            continue
+        else:
+            if starting is None:
+                interval = ending
+            elif ending is None:
+                interval = starting
+            else:
+                interval = starting.merge(ending, on=id_column, how='outer', suffixes=('_start', '_end')).drop(columns=[id_column+'_col_start', id_column+'_col_end'])
         
         yield Traffic(pd.read_parquet(input_file,filters=[(id_column, 'in', interval.index)]))
     
