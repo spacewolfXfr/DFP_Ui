@@ -105,8 +105,6 @@ def get_airport_latlon_transformer(port:Airport) -> pyproj.Transformer:
     )
     
 def display_airport(airport:Airport) -> None:
-    wgs84_to_local = get_airport_latlon_transformer(airport)
-    dest_proj = UTM(zone=wgs84_to_local.target_crs.to_dict()['zone'], southern_hemisphere=airport.latitude < 0)
     fig,ax = plt.subplots(figsize=(10, 10),subplot_kw={"projection": Lambert93()})
     ax.set_title(f"Airport {airport.name} ({airport.icao})")
     airport.plot(ax=ax, footprint=True,

@@ -80,6 +80,7 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
             pending_tasks_count += 1
             
     dts = np.array(arriving_dts+departing_dts)
+    arriving_dts = np.array(arriving_dts)
     ends = np.array(arriving_ends+departing_ends)
     
     print(f"Number of pending tasks: {pending_tasks_count}")
@@ -97,13 +98,33 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     edges = [min_dt-1] + list(range(minrange,maxrange,2)) + [max_dt+1]
     
     hist,edges = np.histogram(dts,edges)
+    arriving_hist,arriving_edges = np.histogram(arriving_dts,edges)
     mean = np.mean(dts)
     median = np.median(dts)
     std = np.std(dts)
+    
+    
         
-    _,hist_ax = plt.subplots(1,1,figsize=(16,9))
-    bars = hist_ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k')
-    hist_ax.bar_label(bars, fontsize=20, color='navy')
+    fig_hist,hist_ax = plt.subplots(1,1,figsize=(16,9))
+    bars = hist_ax.bar(edges[:-1], hist, width=np.diff(edges), align='edge',edgecolor='k',facecolor='lightblue',alpha=0.2)
+    hist_ax.bar_label(bars, fontsize=20, color='k')
+    
+    landing_bars = hist_ax.bar(arriving_edges[:-1], arriving_hist, width=np.diff(arriving_edges), align='edge', facecolor='darkblue')
+    
+    props = arriving_hist/hist
+    prop_labels = []
+    for p in props:
+        if np.isnan(p) or p > 0.99999:
+            prop_labels.append('')
+        else:
+            prop_labels.append('{:.0f}%'.format(p*100))
+    
+    
+    hist_ax.bar_label(landing_bars,
+                      labels = prop_labels,
+                      fontsize=15, color='white',
+                      label_type='center')
+    
     hist_ax.set_xlabel('Delay (minutes)')
     hist_ax.set_xticks(edges)
     hist_ax.set_ylabel('Frequency')
@@ -112,10 +133,11 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     hist_ax.vlines(median, ymin=0, ymax=max(hist), colors='k', linestyles='solid', label='Median: {:.2f} min'.format(median))
     hist_ax.vlines([mean + std, mean - std], ymin=0, ymax=max(hist), colors='g', linestyles='dotted', label='Mean $\\pm$ 1 Std Dev: {:.2f} min'.format(std))
     hist_ax.legend()
+    fig_hist.tight_layout()
     
     
     # Lollipop plot
-    _,time_ax = plt.subplots(1,1,figsize=(16,9))
+    fig_time,time_ax = plt.subplots(1,1,figsize=(16,9))
     cmap = plt.get_cmap('coolwarm')
     colors = cmap((1+dts/abs_max_dt)/2)
     
@@ -125,9 +147,11 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     time_ax.vlines(ends, 0, dts, color=colors, alpha=0.7,zorder=0)
     time_ax.scatter(arriving_ends,arriving_dts, marker='o', c=arriving_colors, edgecolors='k', label='Arriving',zorder=2.2)
     time_ax.scatter(departing_ends,departing_dts, marker='s', c=departing_colors, edgecolors='k', label='Departing',zorder=2.2)
-    time_ax.scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), marker='o', c='k', edgecolors='r', label='Removed (Arriving)', zorder=2.2)
-    time_ax.scatter(removed_departing_time,np.zeros(len(removed_departing_time)), marker='s', c='k', edgecolors='r', label='Removed (Departing)', zorder=2.2)
-    
+    if len(removed_arriving_time) > 0:
+        time_ax.scatter(removed_arriving_time,np.zeros(len(removed_arriving_time)), s=100, marker='o', c='k', edgecolors='r', label='Removed (Arriving)', zorder=2.2)
+    if len(removed_departing_time) > 0:
+        time_ax.scatter(removed_departing_time,np.zeros(len(removed_departing_time)), s=100, marker='s', c='k', edgecolors='r', label='Removed (Departing)', zorder=2.2)
+
     xlims = time_ax.get_xlim()
     
     # Aircraft count plot
@@ -140,15 +164,16 @@ def plot_endpoints_results(tasks:list[FlightEndpoints]):
     twinax.set_ylabel('Aircraft count')
     twinax.yaxis.get_major_locator().set_params(integer=True)
     twinax.grid(True,axis='y',linestyle=':')
-    twinax.legend()
+    twinax.legend().set_loc('upper right')
     
     time_ax.hlines(0,xlims[0],xlims[1],'k',zorder=0.5)
     time_ax.set_xlabel('Time of arrival')
     time_ax.set_ylabel('Delay (minutes)')
     time_ax.set_title('Flight Delays Over Time')
     time_ax.grid(True,axis='y')
-    time_ax.legend()
-            
+    time_ax.legend().set_loc('upper left')
+    fig_time.tight_layout()
+    
     plt.show()
     
     

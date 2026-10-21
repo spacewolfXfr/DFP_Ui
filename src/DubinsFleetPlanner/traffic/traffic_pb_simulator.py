@@ -644,9 +644,9 @@ class ArrivalsSimulator:
         
         # Setting up colors by destination
         
-        runways_dict,self.flight_id_dict = make_colordict(self.tasklist,'tab10',10,runways_dict)   
+        runways_dict,icao_id_dict = make_colordict(self.tasklist,'tab10',10,runways_dict)   
         for t in self.tasklist:
-            self.__color_dict[t.id] = self.flight_id_dict[t.flight_id]
+            self.__color_dict[t.id] = icao_id_dict[t.icao24]
         
         maxx = -np.inf
         maxy = -np.inf

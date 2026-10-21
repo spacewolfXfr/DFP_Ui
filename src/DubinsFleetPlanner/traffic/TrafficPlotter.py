@@ -25,7 +25,7 @@ from cartopy import crs as ccrs
 
 from .FlightExtraction import generate_flightEndpoints,generate_both_flightEndpoints,NM_TO_METERS,FlightEndpoints
 from .TrafficReader import filter_traffic,iter_flight_by_period
-from .AirportHelpers import get_airports,Airports
+from .AirportHelpers import get_airports,Airports,get_airport_latlon_transformer
 from .TaskResultsPlotter import SimulationSummary
 
 from DubinsFleetPlanner.UI.plotting import ColorType
@@ -37,6 +37,17 @@ from DubinsFleetPlanner.UI.plotting import ColorType
 colordict_counter = 0
 
 def make_colordict(tasks:list[FlightEndpoints], colormap:str|typing.Callable[[float], ColorType]='tab10',color_period:int=10, existing:dict[tuple[str,str,bool],ColorType]=dict()) -> typing.Tuple[dict[tuple[str,str,bool],ColorType],dict[str,ColorType]]:
+    """ Generate color dictionnaries based on the airport, runway, and behavior (arriving or departing)
+
+    Args:
+        tasks (list[FlightEndpoints]): List of tasks to generate colors for
+        colormap (str | typing.Callable[[float], ColorType], optional): Colormap to use for generating colors. Defaults to 'tab10'.
+        color_period (int, optional): Number of colors in the colormap (number of distinct intervals in the [0,1] range). Defaults to 10.
+        existing (dict[tuple[str,str,bool],ColorType], optional): Existing color dictionary. Defaults to dict().
+
+    Returns:
+        typing.Tuple[dict[tuple[str,str,bool],ColorType],dict[str,ColorType]]: Two dictionaries: one mapping (airport, runway, behavior) to colors, and another mapping flight icao24 to colors.
+    """
     global colordict_counter
     runway_dict:dict[tuple[str,str,bool],ColorType] = existing
     id_dict:dict[str,ColorType] = dict()
@@ -172,8 +183,9 @@ def animate(airports:Airports, traffic:Traffic, speedup:float=60,
     return animation,colordict
 
 def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints:dict[str,FlightEndpoints]|None=None, colordict:dict[tuple[str,str,bool],ColorType]=dict()) -> dict[tuple[str,str,bool],ColorType]:
-    fig = plt.figure(figsize=(10, 8))
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    transformer = get_airport_latlon_transformer(airports[0])
+    fig = plt.figure(figsize=(8, 8))
+    ax  = plt.axes(projection=ccrs.Projection(transformer.target_crs))
     
     # Setup colors for plotting
     if colordict is None:
@@ -209,25 +221,28 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints
         end         = r.end
         pts = [start,end]
         
-        for p,m,ls,dp,n in zip(pts,markers,linestyles,shifts,plotnames):
-            ax.scatter(
-                [p.longitude],[p.latitude],s=10,color=color,marker=m
-            )
+        # for p,m,ls,dp,n in zip(pts,markers,linestyles,shifts,plotnames):            
+        #     ax.scatter(
+        #         [p.longitude],
+        #         [p.latitude],
+        #         s=10,color=color,marker=m,
+        #         transform=ccrs.PlateCarree()
+        #     )
             
-            try:
-                e = destination(p.latitude,p.longitude,p.bearing,dp * NM_TO_METERS)
-            except Exception as e:
-                print(f"Error at flight {flight} for point {n} with coordinates {p}: {e}\nSkipping this point.")
-                continue
+        #     try:
+        #         e = destination(p.latitude,p.longitude,p.bearing,dp * NM_TO_METERS)
+        #     except Exception as e:
+        #         print(f"Error at flight {flight} for point {n} with coordinates {p}: {e}\nSkipping this point.")
+        #         continue
             
-            ax.plot(
-                [p.longitude,e[1]],
-                [p.latitude,e[0]],
-                linestyle=ls,
-                color=color
-            )
+        #     ax.plot(
+        #         [p.longitude, e[1]],
+        #         [p.latitude, e[0]],
+        #         linestyle=ls,
+        #         color=color,
+        #         transform=ccrs.PlateCarree()
+        #     )
 
-    
     
     for (a,rw,b),c in colordict.items():
         ax.plot([],[],marker='s',linestyle='',color=c,label=f"{a} ({rw} {'departing' if b else 'arriving'})")
@@ -235,7 +250,10 @@ def plot(airports:Airports, traffic:Traffic, expected_speed:float=200, endpoints
     for m,ls,n in zip(markers,linestyles,plotnames):
         ax.plot([],[],marker=m,linestyle=ls,label=n,color=(0.2,0.2,0.2,0.5))
     
-    ax.set_title("Traffic plot for {} flights".format(len(traffic)))
+    ax.set_title("Traffic plot for {} flights, from {} to {}".format(len(traffic), traffic[0].start_time, traffic[-1].end_time))
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
     ax.legend()
     fig.tight_layout()
     plt.show()

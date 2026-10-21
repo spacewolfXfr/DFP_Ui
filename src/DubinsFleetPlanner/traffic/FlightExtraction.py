@@ -512,9 +512,9 @@ def generate_flightEndpoints(airports:Airports,
         endpoints = list(executor.map(__wrapped_extract_flight_endpoints, args_it))
     
     if raw_endpoints:
-        endpoints = {ep[0].flight_id: ep[0] for ep in endpoints if ep is not None}
+        endpoints = {ep[0].icao24: ep[0] for ep in endpoints if ep is not None}
     else:
-        endpoints = {ep[0].flight_id: ep[1] for ep in endpoints if ep is not None and ep[1] is not None}
+        endpoints = {ep[0].icao24: ep[1] for ep in endpoints if ep is not None and ep[1] is not None}
     return endpoints
 
 def generate_both_flightEndpoints(airports:Airports, 
