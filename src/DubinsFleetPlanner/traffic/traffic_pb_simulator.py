@@ -112,7 +112,7 @@ def solve_problem(solver:pathlib.Path,src_dir:pathlib.Path,dest_dir:pathlib.Path
     # cmd.append('0.7')
     # cmd.append('0.8')
     
-    cmd.append('--ellipse-border-only')
+    # cmd.append('--ellipse-border-only')
     
     cmd.append('-v')
     cmd.append('2')
