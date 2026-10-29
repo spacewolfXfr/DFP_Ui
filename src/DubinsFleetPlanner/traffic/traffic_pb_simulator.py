@@ -12,7 +12,6 @@ import pathlib,tempfile
 import json,pickle
 import copy
 from enum import IntEnum
-from argparse import Namespace
 
 import numpy as np
 
@@ -22,7 +21,6 @@ from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from matplotlib.text import Text
 from matplotlib.patches import Circle
-from matplotlib.ticker import FuncFormatter
 from matplotlib import colormaps as cm
 
 import pandas as pd

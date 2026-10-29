@@ -93,7 +93,7 @@ def filter_traffic(traffic:Traffic,ICAO_set:typing.Iterable[str]|Airports,maxdis
         good_traffic = Traffic(good_traffic)
         
     # enhanced_traffic = good_traffic.compute_xy()
-    enhanced_traffic:Traffic = good_traffic.cumulative_distance(compute_gs=False,compute_track=True).eval(thread_count()) #type: ignore
+    enhanced_traffic:Traffic = good_traffic.airborne().cumulative_distance(compute_gs=False,compute_track=True).eval(thread_count()) #type: ignore
     
     return enhanced_traffic
 

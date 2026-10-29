@@ -187,6 +187,24 @@ class FlightEndpoints:
     removed:bool                    = False
     completed:bool                  = False
     
+    def __le__(self,other:FlightEndpoints) -> bool:
+        if self.start_time == other.start_time:
+            return self.callsign <= other.callsign
+        else:
+            return self.start_time < other.start_time
+        
+    def __lt__(self, other:FlightEndpoints) -> bool:
+        if self.start_time == other.start_time:
+            return self.callsign < other.callsign
+        else:
+            return self.start_time < other.start_time
+        
+    def __ge__(self, other):
+        return not(self < other)
+    
+    def __gt__(self, other):
+        return not(self <= other)
+    
     @property
     def id(self) -> int:
         return self.stats.id
@@ -271,6 +289,33 @@ class FlightEndpoints:
             end_proj,
             timeslots=timeslots
         )
+
+def regenerate_flight_id(l:list[FlightEndpoints]|Traffic):
+    callsign_counters:dict[str,int] = {}
+    
+    if isinstance(l,Traffic):
+        callsigns_to_starts:dict[str,list[float]] = {}
+        for flight in l:
+            callsigns_to_starts.setdefault(str(flight.callsign),[]).append(flight.start.timestamp())
+        
+        callsigns_to_id_list:dict[str,np.ndarray] ={k:np.argsort(np.array(v)) for k,v in callsigns_to_starts.items()}
+        flights:list[Flight] = []
+        for flight in l:
+            i = callsign_counters.get(str(flight.callsign), 0)
+            callsign_counters[str(flight.callsign)] = i + 1
+            flights.append(flight.assign(flight_id=f"{flight.callsign}_{callsigns_to_id_list[str(flight.callsign)][i]}"))
+        
+        return Traffic.from_flights(flights)
+        
+    else:
+        l.sort()
+        
+        for e in l:
+            i = callsign_counters.get(e.callsign, 0)
+            callsign_counters[e.callsign] = i + 1
+            e.flight_id = f"{e.callsign}_{i}"
+        
+    return l
 
 def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[str]|Airports,
                              stats:ACStats,circle:Optional[InfluenceCircle]=None,
@@ -367,10 +412,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
             start_runway_name = "Unknown"
         else:
             start_runway = start_airport.runways[takeoff.runway_max]
-            if isinstance(takeoff.runway_max,int):
-                start_runway_name = start_airport.runways.data.iloc[takeoff.runway_max]['name']
-            else:
-                start_runway_name = takeoff.runway_max
+            start_runway_name =  start_runway['name']
         first_dpt = get_first_airbone_dpt(flight)
         assert first_dpt is not None, f"Flight {flight} is departing from airport {start_airport.icao} but no airborne point could be found.\n{flight.data}"
         # if start_runway is not None:
@@ -456,6 +498,7 @@ def extract_flight_endpoints(flight:Flight,candidate_airports:typing.Iterable[st
                 stats.airspeed = first_dpt["groundspeed"]/60 if not pd.isna(first_dpt["groundspeed"]) else stats.target_airspeed
                 stats.target_airspeed = obj_speed
             
+            assert isinstance(start_runway_name,str), f"Flight {flight} is departing from airport {start_airport.icao}. Start runway is identified by {start_runway_name}."
             end_to_ils = FlightEndpoints(
                 flight_datapoint_to_pose(first_dpt) if dpt_proj is None else LatlonPose(dpt_proj[0],dpt_proj[1],fix_dpt["altitude"],dpt_proj[2]),
                 first_dpt["timestamp"],
