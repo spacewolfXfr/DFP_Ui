@@ -49,6 +49,42 @@ ARROWS_SCALING = {
     'width' : 0.03
 }
 
+def _parse_ratio(value:str) -> tuple[float,float,float]:
+    parts = value.split(':')
+    if len(parts) not in (2,3):
+        raise ValueError("ratio must be WIDTH:HEIGHT[:MARGIN]")
+
+    try:
+        width, height = (float(part) for part in parts[:2])
+        margin = float(parts[2])/100 if len(parts) == 3 else 0.95
+    except ValueError as error:
+        raise ValueError("ratio values must be numbers") from error
+
+    if width <= 0 or height <= 0:
+        raise ValueError("ratio width and height must be positive")
+    if not 0 < margin <= 1:
+        raise ValueError("ratio margin must be between 0 and 100 percent")
+    return width, height, margin
+
+def _check_aspect_ratio(ax:Axes, ratio:Optional[tuple[float,float,float]]) -> bool:
+    if ratio is None:
+        return True
+
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    computed = abs((xlim[1] - xlim[0])/(ylim[1] - ylim[0]))
+    expected = ratio[0]/ratio[1]
+    lower = expected*ratio[2]
+    upper = expected*(2-ratio[2])
+    if lower <= computed <= upper:
+        return True
+
+    print(
+        f"Aspect ratio mismatch: computed {computed:.6g}, "
+        f"expected {expected:.6g} (acceptable range {lower:.6g} to {upper:.6g})."
+    )
+    return False
+
 def plot_BasicPath_obstacle(ax:Axes,p:BasicPath):
     if p.type == DubinsMove.STRAIGHT:
         start = p.start()
@@ -135,7 +171,8 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
                                      show_fig:bool=False,
                                      no_legend:bool=False,
                                      xlim:Optional[tuple[float,float]] = None,
-                                     ylim:Optional[tuple[float,float]] = None):
+                                     ylim:Optional[tuple[float,float]] = None,
+                                     ratio:Optional[tuple[float,float,float]] = None):
     # Set axes aspect
     fig,ax = plt.subplots(figsize=(16,9))
     if xlim is None:
@@ -267,12 +304,15 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
 
     
     fig.tight_layout()
+    if not _check_aspect_ratio(ax,ratio):
+        plt.close(fig)
+        return False
     if save_fig is not None:
         fig.savefig(save_fig)
     
     if show_fig:
         plt.show()
-        
+    return True
 
 def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:list[BasicPath],
                                      fps:int=30,
@@ -282,7 +322,8 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
                                      show_animation:bool=False,
                                      no_legend:bool=False,
                                      xlim:Optional[tuple[float,float]] = None,
-                                     ylim:Optional[tuple[float,float]] = None):
+                                     ylim:Optional[tuple[float,float]] = None,
+                                     ratio:Optional[tuple[float,float,float]] = None):
     # Set axes aspect
     fig,ax = plt.subplots(figsize=(16,9))
     ax.set_aspect('equal','datalim')
@@ -440,6 +481,9 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     ax.set_ylim(ylim)
     
     fig.tight_layout()
+    if not _check_aspect_ratio(ax,ratio):
+        plt.close(fig)
+        return False
     ani = FuncAnimation(fig,update,repeat=True,frames=len(poses_list),interval=1000/fps)
     
     if save_animation is not None:
@@ -454,6 +498,7 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     
     if show_animation:
         plt.show()
+    return True
 
 def main():
     import argparse
@@ -471,6 +516,9 @@ def main():
                         default=0)
     parser.add_argument('--xlim',nargs=2,type=float,dest='xlim',help="If defined, set the X-axis limits from plotting",default=None)
     parser.add_argument('--ylim',nargs=2,type=float,dest='ylim',help="If defined, set the Y-axis limits from plotting",default=None)
+    parser.add_argument('--ratio',type=_parse_ratio,
+                        help="Only produce figures with WIDTH:HEIGHT aspect ratio. "
+                             "Optional margin is a percentage (default: 95).")
     parser.add_argument('-G','--geo-obstacles',type=str,dest='geo_obstacles_path',help="Path to the geometric obstacles file.",default=None)
     parser.add_argument('-O','--obstacles',type=str,dest='obstacles_path',help="Path to the dynamic obstacles file.",default=None)
     
@@ -544,9 +592,13 @@ def main():
     
     
     if args.static > 0:
-        snapshot_several_pose2d_sequences(data,geo_obstacles,
-                                          args.static,color_dict,name_dict,save,show_anim,args.no_legend,args.xlim,args.ylim)
+        produced = snapshot_several_pose2d_sequences(data,geo_obstacles,
+                                                     args.static,color_dict,name_dict,save,show_anim,
+                                                     args.no_legend,args.xlim,args.ylim,args.ratio)
     else:
-        animate_several_pose2d_sequences(data,geo_obstacles,
-                                         args.fps,color_dict,name_dict,save,show_anim,args.no_legend,args.xlim,args.ylim)
+        produced = animate_several_pose2d_sequences(data,geo_obstacles,
+                                                    args.fps,color_dict,name_dict,save,show_anim,
+                                                    args.no_legend,args.xlim,args.ylim,args.ratio)
+    if not produced:
+        exit(2)
     print("Done! Exiting...")
