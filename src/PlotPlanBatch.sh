@@ -17,6 +17,21 @@ save_spec=""
 folder=""
 plot_options=()
 
+expand_output_pattern() {
+    local pattern=$1
+    local relative=${source_file#"$folder"/}
+    local relative_stem=${relative%.*}
+    local result=$pattern
+    result=${result//%%/__DFP_PERCENT__}
+    result=${result//%f/$source_name}
+    result=${result//%n/$source_stem}
+    result=${result//%r/$relative_stem}
+    result=${result//%s/$source_stem}
+    result=${result//%/$source_stem}
+    result=${result//__DFP_PERCENT__/%%}
+    printf '%s' "$result"
+}
+
 while (($#)); do
     case "$1" in
         -R)
@@ -112,7 +127,7 @@ for source_file in "${source_files[@]}"; do
     source_name=$(basename "$source_file")
     source_stem=${source_name%.*}
 
-    output_path=${save_spec//%/$source_stem}
+    output_path=$(expand_output_pattern "$save_spec")
     if [[ "$output_path" != *.png && "$output_path" != *.gif && "$output_path" != *.webp && "$output_path" != *.mp4 && "$output_path" != *.webm && "$output_path" != *.apng ]]; then
         output_path+=".png"
     fi
