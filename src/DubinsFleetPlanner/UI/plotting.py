@@ -76,6 +76,8 @@ def _check_aspect_ratio(ax:Axes, ratio:Optional[tuple[float,float,float]]) -> bo
     expected = ratio[0]/ratio[1]
     lower = expected*ratio[2]
     upper = expected*(2-ratio[2])
+    print(f"Computed aspect ratio: {computed:.6g}")
+    print(f"Expected aspect ratio: {expected:.6g} (margin {ratio[2]*100:.6g}%)")
     if lower <= computed <= upper:
         return True
 
