@@ -2,4 +2,4 @@
 
 from DubinsFleetPlanner.UI.plotting import main
 
-main()
+raise SystemExit(main())

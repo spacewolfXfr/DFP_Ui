@@ -22,11 +22,10 @@ import typing
 from typing import Optional
 import pathlib
 import csv
-import os
-import re
-import subprocess
 import sys
 import tempfile
+import contextlib
+from concurrent.futures import ProcessPoolExecutor
 
 from DubinsFleetPlanner.UI._plotting_extra import linestyle_dict,my_cmap,ColorType
 
@@ -72,10 +71,13 @@ def _parse_ratio(value:str) -> tuple[float,float,float]:
         raise ValueError("ratio margin must be between 0 and 100 percent")
     return width, height, margin
 
-def _check_aspect_ratio(ax:Axes, ratio:Optional[tuple[float,float,float]]) -> bool:
+def _check_aspect_ratio(ax:Axes, ratio:Optional[tuple[float,float,float]],
+                        result:Optional[list[float]] = None) -> bool:
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
     computed = abs((xlim[1] - xlim[0])/(ylim[1] - ylim[0]))
+    if result is not None:
+        result.append(computed)
     print(f"Computed aspect ratio: {computed:.6g}")
     if ratio is None:
         return True
@@ -180,7 +182,8 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
                                      no_legend:bool=False,
                                      xlim:Optional[tuple[float,float]] = None,
                                      ylim:Optional[tuple[float,float]] = None,
-                                     ratio:Optional[tuple[float,float,float]] = None):
+                                     ratio:Optional[tuple[float,float,float]] = None,
+                                     aspect_result:Optional[list[float]] = None):
     # Set axes aspect
     fig,ax = plt.subplots(figsize=(16,9))
     if xlim is None:
@@ -312,7 +315,7 @@ def snapshot_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:
 
     
     fig.tight_layout()
-    if not _check_aspect_ratio(ax,ratio):
+    if not _check_aspect_ratio(ax,ratio,aspect_result):
         plt.close(fig)
         return False
     if save_fig is not None:
@@ -331,7 +334,8 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
                                      no_legend:bool=False,
                                      xlim:Optional[tuple[float,float]] = None,
                                      ylim:Optional[tuple[float,float]] = None,
-                                     ratio:Optional[tuple[float,float,float]] = None):
+                                     ratio:Optional[tuple[float,float,float]] = None,
+                                     aspect_result:Optional[list[float]] = None):
     # Set axes aspect
     fig,ax = plt.subplots(figsize=(16,9))
     ax.set_aspect('equal','datalim')
@@ -489,7 +493,7 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     ax.set_ylim(ylim)
     
     fig.tight_layout()
-    if not _check_aspect_ratio(ax,ratio):
+    if not _check_aspect_ratio(ax,ratio,aspect_result):
         plt.close(fig)
         return False
     ani = FuncAnimation(fig,update,repeat=True,frames=len(poses_list),interval=1000/fps)
@@ -508,82 +512,8 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
         plt.show()
     return True
 
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser('Dubins plotter','Display a Dubins path planning result.')
-    parser.add_argument('file',type=str,help='File from which to parse data')
-    parser.add_argument('save',type=str,nargs='?',default=None,help='Optional argument: if set, specifies where to save the animation')
-    parser.add_argument('--batch',action='store_true',
-                        help="Process all CSV and JSON files in the input folder.")
-    parser.add_argument('--recursive',action='store_true',
-                        help="With --batch, also process files in subfolders.")
-    parser.add_argument('--summary',nargs='?',const='summary.csv',default=None,
-                        help="With --batch, write a CSV summary to this path (default: summary.csv).")
-    parser.add_argument('-np','--no-print',dest='no_print',action='store_true',help='Hide resulting animation if set')
-    parser.add_argument('--fps',type=int,help="Number of Frames Per Second when building animation. Default is 30",default=30)
-    parser.add_argument('-c','--colormap',type=str,help="A Matplotlib colormap name, mapping aircraft ID to color. Default to a qualitative map",default=None)
-    parser.add_argument('--no-legend',dest='no_legend',action='store_true',help="Remove the legend for a cleaner plot. Default to False", default=False)
-    parser.add_argument('-n','--sample-num',dest='sample_num',type=int,help="Number of samples to take to generate figure. Only relevant on JSON files. Default to 500",default=500)
-    parser.add_argument('-s','--static',dest='static',type=int,
-                        help="Print a static image with superposed snapshots instead of an animation. The parameter sets the number of snapshots. Must be a positive integer",
-                        default=0)
-    parser.add_argument('--xlim',nargs=2,type=float,dest='xlim',help="If defined, set the X-axis limits from plotting",default=None)
-    parser.add_argument('--ylim',nargs=2,type=float,dest='ylim',help="If defined, set the Y-axis limits from plotting",default=None)
-    parser.add_argument('--ratio',type=_parse_ratio,
-                        help="Only produce figures with WIDTH:HEIGHT aspect ratio. "
-                             "Optional margin is a percentage (default: 95).")
-    parser.add_argument('-G','--geo-obstacles',type=str,dest='geo_obstacles_path',help="Path to the geometric obstacles file.",default=None)
-    parser.add_argument('-O','--obstacles',type=str,dest='obstacles_path',help="Path to the dynamic obstacles file.",default=None)
-    
-    args = parser.parse_args()
-
-    if args.batch:
-        folder = pathlib.Path(args.file)
-        if not folder.is_dir():
-            parser.error("--batch requires file to be a folder")
-        if args.save is not None and '%' not in args.save:
-            parser.error("--batch save argument must contain '%'")
-
-        pattern = "**/*" if args.recursive else "*"
-        files = sorted(path for path in folder.glob(pattern)
-                       if path.is_file() and path.suffix.lower() in ('.csv', '.json'))
-        summary_file = pathlib.Path(args.summary) if args.summary is not None else None
-        summary_parent = summary_file.parent if summary_file is not None else None
-        if summary_parent is not None:
-            summary_parent.mkdir(parents=True, exist_ok=True)
-
-        with summary_file.open('w', newline='') if summary_file is not None else open(os.devnull, 'w', newline='') as summary:
-            writer = csv.writer(summary)
-            if summary_file is not None:
-                writer.writerow(('source_file', 'output_file', 'aspect_ratio', 'compatible'))
-            with tempfile.TemporaryDirectory(prefix='dfp_ui_batch_') as temporary:
-                for source in files:
-                    stem = source.stem
-                    if args.save is None:
-                        output = pathlib.Path(temporary) / f'{stem}.png'
-                    else:
-                        output = pathlib.Path(args.save.replace('%', stem))
-                        output.parent.mkdir(parents=True, exist_ok=True)
-
-                    command = [sys.executable, __file__, str(source), str(output),
-                               '--no-print']
-                    command.extend(sys.argv[1:])
-                    command = [value for value in command
-                               if value not in ('--batch', '--recursive') and value != args.file
-                               and value != args.save and value != args.summary]
-                    if args.summary is not None:
-                        command = [value for value in command if value != '--summary']
-                    result = subprocess.run(command, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, text=True)
-                    print(result.stdout, file=sys.stderr, end='')
-                    match = re.findall(r'Computed aspect ratio:\s*([^\s]+)', result.stdout)
-                    aspect = match[-1] if match else ''
-                    compatible = int(result.returncode == 0)
-                    if summary_file is not None:
-                        writer.writerow((source, output, aspect, compatible))
-        return
-    
+def _plot_file(path:pathlib.Path, args, save:Optional[str],
+               show_anim:bool) -> tuple[Optional[float], bool]:
     path = pathlib.Path(args.file)
     if not(path.is_file()):
         print(f"{path} is not a file!! Exiting....")
@@ -651,14 +581,89 @@ def main():
             color_dict[id] = cmap((id-min_id)/(max_id-min_id))
     
     
+    aspect_result = []
     if args.static > 0:
         produced = snapshot_several_pose2d_sequences(data,geo_obstacles,
                                                      args.static,color_dict,name_dict,save,show_anim,
-                                                     args.no_legend,args.xlim,args.ylim,args.ratio)
+                                                     args.no_legend,args.xlim,args.ylim,args.ratio,
+                                                     aspect_result)
     else:
         produced = animate_several_pose2d_sequences(data,geo_obstacles,
                                                     args.fps,color_dict,name_dict,save,show_anim,
-                                                    args.no_legend,args.xlim,args.ylim,args.ratio)
+                                                    args.no_legend,args.xlim,args.ylim,args.ratio,
+                                                    aspect_result)
     if not produced:
-        exit(2)
+        return (aspect_result[0] if aspect_result else None), False
     print("Done! Exiting...")
+    return (aspect_result[0] if aspect_result else None), True
+
+def _batch_worker(task) -> tuple[pathlib.Path,pathlib.Path,Optional[float],bool]:
+    source, output, args = task
+    with contextlib.redirect_stdout(sys.stderr):
+        aspect, compatible = _plot_file(source, args, str(output), False)
+    return source, output, aspect, compatible
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser('Dubins plotter','Display a Dubins path planning result.')
+    parser.add_argument('file',type=str,help='File from which to parse data')
+    parser.add_argument('save',type=str,nargs='?',default=None,help='Optional argument: if set, specifies where to save the animation')
+    parser.add_argument('--batch',action='store_true',help="Process all CSV and JSON files in the input folder.")
+    parser.add_argument('--recursive',action='store_true',help="With --batch, also process files in subfolders.")
+    parser.add_argument('--summary',nargs='?',const='summary.csv',default=None,help="With --batch, write a CSV summary.")
+    parser.add_argument('-np','--no-print',dest='no_print',action='store_true',help='Hide resulting animation if set')
+    parser.add_argument('--fps',type=int,default=30)
+    parser.add_argument('-c','--colormap',type=str,default=None)
+    parser.add_argument('--no-legend',dest='no_legend',action='store_true',default=False)
+    parser.add_argument('-n','--sample-num',dest='sample_num',type=int,default=500)
+    parser.add_argument('-s','--static',dest='static',type=int,default=0)
+    parser.add_argument('--xlim',nargs=2,type=float,dest='xlim',default=None)
+    parser.add_argument('--ylim',nargs=2,type=float,dest='ylim',default=None)
+    parser.add_argument('--ratio',type=_parse_ratio,default=None)
+    parser.add_argument('-G','--geo-obstacles',type=str,dest='geo_obstacles_path',default=None)
+    parser.add_argument('-O','--obstacles',type=str,dest='obstacles_path',default=None)
+    args = parser.parse_args()
+
+    if not args.batch:
+        path = pathlib.Path(args.file)
+        if not path.is_file():
+            print(f"{path} is not a file!! Exiting....")
+            return 1
+        _, compatible = _plot_file(path, args, args.save, not args.no_print)
+        return 0 if compatible else 2
+
+    folder = pathlib.Path(args.file)
+    if not folder.is_dir():
+        parser.error("--batch requires file to be a folder")
+    if args.save is not None and '%' not in args.save:
+        parser.error("--batch save argument must contain '%'")
+
+    pattern = "**/*" if args.recursive else "*"
+    files = sorted(path for path in folder.glob(pattern)
+                   if path.is_file() and path.suffix.lower() in ('.csv', '.json'))
+    summary_file = pathlib.Path(args.summary) if args.summary is not None else None
+    if summary_file is not None:
+        summary_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix='dfp_ui_batch_') as temporary:
+        tasks = []
+        for source in files:
+            stem = source.stem
+            output = (pathlib.Path(temporary) / f'{stem}.png' if args.save is None
+                      else pathlib.Path(args.save.replace('%', stem)))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            tasks.append((source, output, args))
+
+        with ProcessPoolExecutor() as pool:
+            results = pool.map(_batch_worker, tasks)
+            if summary_file is not None:
+                with summary_file.open('w', newline='') as stream:
+                    writer = csv.writer(stream)
+                    writer.writerow(('source_file', 'output_file', 'aspect_ratio', 'compatible'))
+                    for source, output, aspect, compatible in results:
+                        writer.writerow((source, output, aspect if aspect is not None else '', int(compatible)))
+            else:
+                for _ in results:
+                    pass
+    return 0
