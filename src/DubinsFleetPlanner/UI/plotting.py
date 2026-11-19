@@ -444,12 +444,17 @@ def animate_several_pose2d_sequences(poses_list:ListOfTimedPoses,geo_obstacles:l
     
     if save_animation is not None:
         print(f"Saving file to '{save_animation}' ...",end='',flush=True)
-        if ".gif" in save_animation or ".webp" in save_animation or ".apng" in save_animation:
-            ani.save(save_animation,fps=fps,writer="pillow")
-        elif ".webm" in save_animation:
-            ani.save(save_animation,fps=fps,writer="imagemagick",extra_args=["-quality", "100"])
-        else:
-            ani.save(save_animation,fps=fps)
+        def show_progress(current_frame: int, total_frames: int) -> None:
+            progress = (current_frame + 1) / total_frames
+            bar_width = 40
+            completed = int(bar_width * progress)
+            bar = '#' * completed + '-' * (bar_width - completed)
+            print(f'\rSaving animation: [{bar}] {progress:.0%}', end='', flush=True)
+            
+        ani.save(
+            save_animation, writer='ffmpeg', fps=fps,extra_args=['-preset', 'ultrafast','-vcodec', 'libx264'],
+            progress_callback=show_progress)
+        print()
         print(" Done!")
     
     if show_animation:
