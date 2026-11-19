@@ -21,6 +21,12 @@ import numpy as np
 import typing
 from typing import Optional
 import pathlib
+import csv
+import os
+import re
+import subprocess
+import sys
+import tempfile
 
 from DubinsFleetPlanner.UI._plotting_extra import linestyle_dict,my_cmap,ColorType
 
@@ -67,16 +73,16 @@ def _parse_ratio(value:str) -> tuple[float,float,float]:
     return width, height, margin
 
 def _check_aspect_ratio(ax:Axes, ratio:Optional[tuple[float,float,float]]) -> bool:
-    if ratio is None:
-        return True
-
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
     computed = abs((xlim[1] - xlim[0])/(ylim[1] - ylim[0]))
+    print(f"Computed aspect ratio: {computed:.6g}")
+    if ratio is None:
+        return True
+
     expected = ratio[0]/ratio[1]
     lower = expected*ratio[2]
     upper = expected*(2-ratio[2])
-    print(f"Computed aspect ratio: {computed:.6g}")
     print(f"Expected aspect ratio: {expected:.6g} (margin {ratio[2]*100:.6g}%)")
     if lower <= computed <= upper:
         return True
@@ -508,6 +514,12 @@ def main():
     parser = argparse.ArgumentParser('Dubins plotter','Display a Dubins path planning result.')
     parser.add_argument('file',type=str,help='File from which to parse data')
     parser.add_argument('save',type=str,nargs='?',default=None,help='Optional argument: if set, specifies where to save the animation')
+    parser.add_argument('--batch',action='store_true',
+                        help="Process all CSV and JSON files in the input folder.")
+    parser.add_argument('--recursive',action='store_true',
+                        help="With --batch, also process files in subfolders.")
+    parser.add_argument('--summary',nargs='?',const='summary.csv',default=None,
+                        help="With --batch, write a CSV summary to this path (default: summary.csv).")
     parser.add_argument('-np','--no-print',dest='no_print',action='store_true',help='Hide resulting animation if set')
     parser.add_argument('--fps',type=int,help="Number of Frames Per Second when building animation. Default is 30",default=30)
     parser.add_argument('-c','--colormap',type=str,help="A Matplotlib colormap name, mapping aircraft ID to color. Default to a qualitative map",default=None)
@@ -525,6 +537,52 @@ def main():
     parser.add_argument('-O','--obstacles',type=str,dest='obstacles_path',help="Path to the dynamic obstacles file.",default=None)
     
     args = parser.parse_args()
+
+    if args.batch:
+        folder = pathlib.Path(args.file)
+        if not folder.is_dir():
+            parser.error("--batch requires file to be a folder")
+        if args.save is not None and '%' not in args.save:
+            parser.error("--batch save argument must contain '%'")
+
+        pattern = "**/*" if args.recursive else "*"
+        files = sorted(path for path in folder.glob(pattern)
+                       if path.is_file() and path.suffix.lower() in ('.csv', '.json'))
+        summary_file = pathlib.Path(args.summary) if args.summary is not None else None
+        summary_parent = summary_file.parent if summary_file is not None else None
+        if summary_parent is not None:
+            summary_parent.mkdir(parents=True, exist_ok=True)
+
+        with summary_file.open('w', newline='') if summary_file is not None else open(os.devnull, 'w', newline='') as summary:
+            writer = csv.writer(summary)
+            if summary_file is not None:
+                writer.writerow(('source_file', 'output_file', 'aspect_ratio', 'compatible'))
+            with tempfile.TemporaryDirectory(prefix='dfp_ui_batch_') as temporary:
+                for source in files:
+                    stem = source.stem
+                    if args.save is None:
+                        output = pathlib.Path(temporary) / f'{stem}.png'
+                    else:
+                        output = pathlib.Path(args.save.replace('%', stem))
+                        output.parent.mkdir(parents=True, exist_ok=True)
+
+                    command = [sys.executable, __file__, str(source), str(output),
+                               '--no-print']
+                    command.extend(sys.argv[1:])
+                    command = [value for value in command
+                               if value not in ('--batch', '--recursive') and value != args.file
+                               and value != args.save and value != args.summary]
+                    if args.summary is not None:
+                        command = [value for value in command if value != '--summary']
+                    result = subprocess.run(command, stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT, text=True)
+                    print(result.stdout, file=sys.stderr, end='')
+                    match = re.findall(r'Computed aspect ratio:\s*([^\s]+)', result.stdout)
+                    aspect = match[-1] if match else ''
+                    compatible = int(result.returncode == 0)
+                    if summary_file is not None:
+                        writer.writerow((source, output, aspect, compatible))
+        return
     
     path = pathlib.Path(args.file)
     if not(path.is_file()):
